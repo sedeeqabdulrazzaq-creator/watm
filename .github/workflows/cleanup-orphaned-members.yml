@@ -1,0 +1,54 @@
+name: Cleanup orphaned circle members
+
+# Runs the same script from scripts/cleanup-orphaned-members.js on a
+# schedule. This is a plain Node script using the Firebase Admin SDK — it
+# needs zero Google Cloud billing and does not require the Blaze plan, so
+# it works even though Cloud Functions can't be deployed yet.
+#
+# Setup (one time):
+#   1. Firebase Console -> Project settings -> Service accounts
+#      -> Generate new private key (downloads a .json file).
+#   2. In this repo: Settings -> Secrets and variables -> Actions
+#      -> New repository secret.
+#      Name:  FIREBASE_SERVICE_ACCOUNT_KEY
+#      Value: paste the full contents of that .json file.
+#
+# After that this runs automatically every week, and you can also trigger
+# it manually any time from the Actions tab ("Run workflow").
+
+on:
+  schedule:
+    # Every Sunday at 03:00 UTC. Adjust as you like.
+    - cron: '0 3 * * 0'
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install script dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Write service account key
+        working-directory: scripts
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}' > service-account-key.json
+
+      - name: Run cleanup (apply)
+        working-directory: scripts
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: service-account-key.json
+        run: node cleanup-orphaned-members.js --apply
+
+      - name: Remove service account key
+        if: always()
+        working-directory: scripts
+        run: rm -f service-account-key.json

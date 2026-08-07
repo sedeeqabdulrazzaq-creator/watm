@@ -1,0 +1,12 @@
+# انسخ هذا الملف إلى android/key.properties وعبّئه بقيمك الحقيقية.
+# لا ترفعه إلى Git إطلاقاً — تسريبه أو فقدانه يعني فقدان القدرة على تحديث التطبيق.
+#
+# لإنشاء المفتاح مرة واحدة:
+#   keytool -genkey -v -keystore C:\keys\watm-release.jks -storetype JKS ^
+#           -keyalg RSA -keysize 2048 -validity 10000 -alias watm
+#
+# ملاحظة: في Windows اكتب الشرطة المائلة العكسية مضاعفة \\ داخل storeFile.
+storePassword=ضع_كلمة_مرور_المخزن
+keyPassword=ضع_كلمة_مرور_المفتاح
+keyAlias=watm
+storeFile=C:\\keys\\watm-release.jks

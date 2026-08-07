@@ -1,0 +1,11 @@
+{
+  "name": "watm-scripts",
+  "description": "One-off admin scripts for the WATM Firebase project. Not deployed with the app.",
+  "private": true,
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0"
+  }
+}

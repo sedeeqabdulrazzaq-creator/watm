@@ -1,0 +1,25 @@
+﻿# Flutter
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# أسرار — لا تُرفع أبداً
+android/key.properties
+*.jks
+*.keystore
+lib/firebase_options.dart
+google-services.json
+GoogleService-Info.plist
+.env
+functions/node_modules/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# نظام
+.idea/
+.vscode/
+*.iml
+.DS_Store

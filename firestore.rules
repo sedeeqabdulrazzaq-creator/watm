@@ -1,0 +1,653 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isCurrentGroupMember(groupId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    // Compatibility for accounts created before member sub-documents became
+    // mandatory. New clients cannot point themselves at an arbitrary group
+    // because updates to groupId/circleId are validated below.
+    function userProfilePointsToGroup(groupId) {
+      return isSignedIn()
+        && (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('groupId', '') == groupId
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('circleId', '') == groupId);
+    }
+
+    function hasGroupAccess(groupId) {
+      return isCurrentGroupMember(groupId)
+        || userProfilePointsToGroup(groupId);
+    }
+
+    function validWeightGoal(data) {
+      return (data.currentWeightKg is int || data.currentWeightKg is float)
+        && data.currentWeightKg >= 35
+        && data.currentWeightKg <= 350
+        && (data.targetWeightKg is int || data.targetWeightKg is float)
+        && data.targetWeightKg >= 30
+        && data.targetWeightKg < data.currentWeightKg
+        && (data.weightLossGoalKg is int || data.weightLossGoalKg is float)
+        && data.weightLossGoalKg
+          == data.currentWeightKg - data.targetWeightKg;
+    }
+
+    function validCheckIn(data) {
+      return data.keys().hasAll([
+          'day',
+          'note',
+          'streak',
+          'moved',
+          'followedFoodPlan',
+          'hydrated',
+          'commitmentScore',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'day',
+          'note',
+          'streak',
+          'moved',
+          'followedFoodPlan',
+          'hydrated',
+          'commitmentScore',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.day is timestamp
+        && data.note is string
+        && data.note.size() <= 500
+        && data.streak is int
+        && data.streak >= 1
+        && data.streak <= 3650
+        && data.moved is bool
+        && data.followedFoodPlan is bool
+        && data.hydrated is bool
+        && data.commitmentScore is int
+        && data.commitmentScore >= 0
+        && data.commitmentScore <= 3
+        && data.commitmentScore
+          == (data.moved == true ? 1 : 0)
+            + (data.followedFoodPlan == true ? 1 : 0)
+            + (data.hydrated == true ? 1 : 0)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function willBeCurrentGroupMember(groupId) {
+      return isSignedIn()
+        && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.userId
+          == request.auth.uid;
+    }
+
+    function userWillPointToGroup(groupId) {
+      return getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId
+        == groupId;
+    }
+
+    function validCircleStatus(data) {
+      return (data.memberCount >= 1
+          && data.memberCount < data.minimumStartMembers
+          && data.status == 'forming')
+        || (data.memberCount >= data.minimumStartMembers
+          && data.memberCount < data.maxMembers
+          && data.status == 'active')
+        || (data.memberCount == data.maxMembers
+          && data.status == 'full');
+    }
+
+    function validScheduleItem(data) {
+      return data.keys().hasAll([
+          'title',
+          'frequency',
+          'hour',
+          'minute',
+          'reminderEnabled',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'title',
+          'frequency',
+          'hour',
+          'minute',
+          'weekday',
+          'reminderEnabled',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.title is string
+        && data.title.size() > 0
+        && data.title.size() <= 120
+        && data.frequency in ['daily', 'weekly']
+        && data.hour is int
+        && data.hour >= 0
+        && data.hour <= 23
+        && data.minute is int
+        && data.minute >= 0
+        && data.minute <= 59
+        && data.reminderEnabled is bool
+        && data.updatedAt is timestamp
+        && data.get('createdAt', request.time) is timestamp
+        && ((data.frequency == 'daily'
+            && !data.keys().hasAny(['weekday']))
+          || (data.frequency == 'weekly'
+            && data.weekday is int
+            && data.weekday >= 1
+            && data.weekday <= 7));
+    }
+
+    function validBucket(data, bucketId) {
+      return data.keys().hasAll([
+          'matchingKey',
+          'nextCircleNumber',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'matchingKey',
+          'openGroupId',
+          'nextCircleNumber',
+          'updatedAt'
+        ])
+        && data.matchingKey == bucketId
+        && data.nextCircleNumber is int
+        && data.nextCircleNumber >= 1
+        && data.updatedAt is timestamp;
+    }
+
+    // الحاوية لا تشير إلا إلى دائرة الكاتب نفسه، وبنفس مفتاح المطابقة،
+    // وغير ممتلئة. دُمجت هنا لأن openGroupId مُلزَم بمساواة groupId — فهما
+    // وثيقة واحدة، وربطها بـ let يجعلها استدعاءً واحداً بدل ثلاثة.
+    function validBucketTarget(data, bucketId) {
+      let myGroupId = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId;
+      let group = getAfter(/databases/$(database)/documents/groups/$(myGroupId)).data;
+      return myGroupId is string
+        && myGroupId.size() > 0
+        && willBeCurrentGroupMember(myGroupId)
+        && group.matchingKey == bucketId
+        && (!data.keys().hasAny(['openGroupId'])
+          || (data.openGroupId == myGroupId && group.memberCount < 7));
+    }
+
+    function groupCountWillIncludeNewMember(groupId) {
+      let after = getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberCount;
+      return after == 1
+        || after
+          == get(/databases/$(database)/documents/groups/$(groupId)).data.memberCount + 1;
+    }
+
+    // Private user profile. Membership billing/admin fields are never
+    // writable by the client application.
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'membershipStatus',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.membershipStatus == 'applicant'
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && (!request.resource.data.keys().hasAny([
+            'currentWeightKg', 'targetWeightKg', 'weightLossGoalKg'
+          ])
+          || (request.resource.data.keys().hasAll([
+              'currentWeightKg', 'targetWeightKg', 'weightLossGoalKg'
+            ])
+            && validWeightGoal(request.resource.data)))
+        && !request.resource.data.keys().hasAny([
+          'role',
+          'isAdmin',
+          'membershipPlan',
+          'membershipStartedAt',
+          'membershipEndsAt',
+          'groupId',
+          'circleId',
+          'matchingKey',
+          'matchingStatus',
+          'matchedAt',
+          'pendingMatchingKey'
+        ]);
+
+      allow update: if isOwner(userId)
+        && request.resource.data.get('uid', userId) == userId
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'uid',
+          'role',
+          'isAdmin',
+          'membershipPlan',
+          'membershipStartedAt',
+          'membershipEndsAt'
+        ])
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['membershipStatus'])
+          || (resource.data.get('membershipStatus', 'applicant')
+              in ['applicant', 'trial']
+            && request.resource.data.membershipStatus
+              in ['applicant', 'trial']))
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['trialStatus'])
+          || request.resource.data.trialStatus == 'active')
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['trialStartedAt'])
+          || (resource.data.get('trialStartedAt', null) == null
+            && request.resource.data.trialStartedAt == request.time))
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny([
+              'groupId',
+              'circleId',
+              'matchingKey',
+              'matchingStatus',
+              'matchedAt'
+            ])
+          || (request.resource.data.groupId is string
+            && request.resource.data.groupId.size() > 0
+            && request.resource.data.circleId
+              == request.resource.data.groupId
+            && request.resource.data.matchingKey is string
+            && request.resource.data.matchingKey
+              == request.resource.data.get('pendingMatchingKey', '')
+            && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.matchingKey
+              == request.resource.data.matchingKey
+            && request.resource.data.matchingStatus == 'matched'
+            && request.resource.data.matchedAt is timestamp
+            && willBeCurrentGroupMember(request.resource.data.groupId)))
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['pendingMatchingKey'])
+          || (request.resource.data.get('pendingMatchingKey', '') is string
+            && request.resource.data.get('pendingMatchingKey', '').size()
+              <= 120))
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny([
+              'currentWeightKg', 'targetWeightKg', 'weightLossGoalKg'
+            ])
+          || validWeightGoal(request.resource.data));
+
+      allow delete: if false;
+
+      match /checkIns/{checkInId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && validCheckIn(request.resource.data)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isOwner(userId)
+          && validCheckIn(request.resource.data)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
+
+      match /returns/{returnId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && request.resource.data.keys().hasAll([
+            'absenceDays', 'selectedAction', 'returnedAt', 'status'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'absenceDays', 'selectedAction', 'returnedAt', 'status'
+          ])
+          && request.resource.data.absenceDays is int
+          && request.resource.data.absenceDays >= 1
+          && request.resource.data.absenceDays <= 30
+          && request.resource.data.selectedAction is string
+          && request.resource.data.selectedAction.size() <= 160
+          && request.resource.data.returnedAt is timestamp
+          && request.resource.data.status == 'returned';
+        allow delete: if false;
+      }
+
+      match /notificationReads/{notificationId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && request.resource.data.keys().hasAll([
+            'encouragementId', 'groupId', 'readAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'encouragementId', 'groupId', 'readAt'
+          ])
+          && request.resource.data.encouragementId == notificationId
+          && request.resource.data.groupId is string
+          && request.resource.data.groupId.size() > 0
+          && request.resource.data.readAt == request.time
+          && hasGroupAccess(request.resource.data.groupId)
+          && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/encouragements/$(notificationId))
+          && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/encouragements/$(notificationId)).data.recipientId
+            == userId;
+        allow delete: if false;
+      }
+
+      match /weeklyReviews/{reviewId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && request.resource.data.keys().hasAll([
+            'weekId',
+            'weekStart',
+            'weekEnd',
+            'attendanceCount',
+            'selfRating',
+            'biggestWin',
+            'nextFocus',
+            'updatedAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'weekId',
+            'weekStart',
+            'weekEnd',
+            'attendanceCount',
+            'selfRating',
+            'biggestWin',
+            'nextFocus',
+            'updatedAt'
+          ])
+          && request.resource.data.weekId == reviewId
+          && request.resource.data.weekStart is timestamp
+          && request.resource.data.weekEnd is timestamp
+          && request.resource.data.attendanceCount is int
+          && request.resource.data.attendanceCount >= 0
+          && request.resource.data.attendanceCount <= 7
+          && request.resource.data.selfRating is int
+          && request.resource.data.selfRating >= 1
+          && request.resource.data.selfRating <= 5
+          && request.resource.data.biggestWin is string
+          && request.resource.data.biggestWin.size() <= 160
+          && request.resource.data.nextFocus is string
+          && request.resource.data.nextFocus.size() <= 160
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
+
+      match /scheduleItems/{itemId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && validScheduleItem(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      // Legacy requests remain private; no client may approve itself.
+      match /membershipRequests/{requestId} {
+        allow read, create: if isOwner(userId);
+        allow update, delete: if false;
+      }
+    }
+
+    // Group metadata can be read by authenticated users because automatic
+    // matching must inspect one known open group. Listing all groups is denied.
+    match /groups/{groupId} {
+      allow get: if hasGroupAccess(groupId)
+        || (isSignedIn()
+          && resource.data.matchingKey is string
+          && resource.data.matchingKey
+            == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey);
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasAll([
+          'name',
+          'matchingKey',
+          'goal',
+          'duration',
+          'ageGroup',
+          'memberCount',
+          'maxMembers',
+          'minimumStartMembers',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'name',
+          'matchingKey',
+          'goal',
+          'duration',
+          'ageGroup',
+          'memberCount',
+          'maxMembers',
+          'minimumStartMembers',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.matchingKey is string
+        && request.resource.data.matchingKey.size() > 0
+        && request.resource.data.matchingKey
+          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey
+        && request.resource.data.goal is string
+        && request.resource.data.duration is string
+        && request.resource.data.ageGroup is string
+        && request.resource.data.memberCount == 1
+        && request.resource.data.maxMembers == 7
+        && request.resource.data.minimumStartMembers == 5
+        && request.resource.data.status == 'forming'
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && willBeCurrentGroupMember(groupId)
+        && userWillPointToGroup(groupId);
+
+      allow update: if isSignedIn()
+        && !exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['memberCount', 'status', 'updatedAt'])
+        && resource.data.maxMembers == 7
+        && resource.data.minimumStartMembers == 5
+        && resource.data.matchingKey
+          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey
+        && request.resource.data.memberCount
+          == resource.data.memberCount + 1
+        && request.resource.data.memberCount <= 7
+        && request.resource.data.updatedAt is timestamp
+        && validCircleStatus(request.resource.data)
+        && willBeCurrentGroupMember(groupId)
+        && userWillPointToGroup(groupId);
+
+      allow delete: if false;
+
+      match /members/{memberId} {
+        // `isOwner(memberId)` ليست تساهلاً بل شرط لعمل الانضمام أصلاً.
+        //
+        // `_joinCircle` تقرأ وثيقة العضو قبل الكتابة لتمنع الانضمام
+        // المكرر، و`hasGroupAccess` وحدها تجعل هذي القراءة حكراً على من
+        // هو عضو بالفعل — أي أن الوحيد الممنوع منها هو القادم الجديد،
+        // وهو صاحب الحاجة إليها. النتيجة كانت فشل كل انضمام لدائرة
+        // قائمة بينما ينجح إنشاء أول دائرة (لأنه لا يقرأ وثيقة عضو).
+        //
+        // لا تسريب هنا: `isOwner(memberId)` تقصر القراءة على وثيقة
+        // القارئ نفسه، فلا يستطيع أحد استكشاف عضوية غيره.
+        allow read: if hasGroupAccess(groupId) || isOwner(memberId);
+
+        allow create: if isOwner(memberId)
+          && request.resource.data.keys().hasAll([
+            'userId',
+            'uid',
+            'firstName',
+            'goal',
+            'duration',
+            'ageGroup',
+            'interactionTime',
+            'seriousness',
+            'supportStyle',
+            'personalStreak',
+            'joinedAt',
+            'updatedAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'userId',
+            'uid',
+            'firstName',
+            'goal',
+            'duration',
+            'ageGroup',
+            'interactionTime',
+            'seriousness',
+            'supportStyle',
+            'personalStreak',
+            'joinedAt',
+            'updatedAt'
+          ])
+          && request.resource.data.userId == memberId
+          && request.resource.data.uid == memberId
+          && request.resource.data.firstName is string
+          && request.resource.data.firstName.size() > 0
+          && request.resource.data.firstName.size() <= 80
+          && request.resource.data.goal is string
+          && request.resource.data.duration is string
+          && request.resource.data.ageGroup is string
+          && request.resource.data.interactionTime is string
+          && request.resource.data.seriousness is string
+          && request.resource.data.supportStyle is string
+          && request.resource.data.personalStreak == 0
+          && request.resource.data.joinedAt is timestamp
+          && request.resource.data.updatedAt is timestamp
+          && userWillPointToGroup(groupId)
+          && groupCountWillIncludeNewMember(groupId);
+
+        allow update: if isOwner(memberId)
+          && request.resource.data.userId == memberId
+          && request.resource.data.uid == memberId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'firstName',
+            'personalStreak',
+            'lastCheckInAt',
+            'updatedAt'
+          ])
+          && request.resource.data.firstName is string
+          && request.resource.data.firstName.size() > 0
+          && request.resource.data.firstName.size() <= 80
+          && request.resource.data.personalStreak is int
+          && request.resource.data.personalStreak >= 0
+          && request.resource.data.personalStreak <= 3650
+          && request.resource.data.updatedAt is timestamp
+          && request.resource.data.get('lastCheckInAt', request.time)
+            is timestamp;
+
+        allow delete: if false;
+      }
+
+      match /encouragements/{encouragementId} {
+        allow read: if hasGroupAccess(groupId);
+
+        allow create: if hasGroupAccess(groupId)
+          && request.resource.data.keys().hasAll([
+            'senderId',
+            'senderName',
+            'recipientId',
+            'recipientName',
+            'message',
+            'createdAt',
+            'read',
+            'type'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'senderId',
+            'senderName',
+            'recipientId',
+            'recipientName',
+            'message',
+            'createdAt',
+            'read',
+            'type'
+          ])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.senderName
+            == get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.firstName
+          && request.resource.data.recipientId is string
+          && request.resource.data.recipientId != request.auth.uid
+          && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.recipientId))
+          && request.resource.data.senderName is string
+          && request.resource.data.senderName.size() > 0
+          && request.resource.data.senderName.size() <= 80
+          && request.resource.data.recipientName is string
+          && request.resource.data.recipientName.size() > 0
+          && request.resource.data.recipientName.size() <= 80
+          && request.resource.data.recipientName
+            == get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.recipientId)).data.firstName
+          && request.resource.data.message is string
+          && request.resource.data.message.size() > 0
+          && request.resource.data.message.size() <= 180
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.read == false
+          && request.resource.data.type == 'support';
+
+        allow update, delete: if false;
+      }
+    }
+
+    // A bucket only points to a non-full group with the same matching key.
+    match /matchingBuckets/{bucketId} {
+      allow get: if isSignedIn()
+        && bucketId
+          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey;
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && validBucket(request.resource.data, bucketId)
+        && request.resource.data.nextCircleNumber == 1
+        && request.resource.data.keys().hasAny(['openGroupId'])
+        && validBucketTarget(request.resource.data, bucketId);
+
+      allow update: if isSignedIn()
+        && validBucket(request.resource.data, bucketId)
+        && (request.resource.data.nextCircleNumber
+            == resource.data.nextCircleNumber
+          || request.resource.data.nextCircleNumber
+            == resource.data.nextCircleNumber + 1)
+        && validBucketTarget(request.resource.data, bucketId);
+
+      allow delete: if false;
+    }
+
+    match /matchingQueue/{userId} {
+      allow read: if isOwner(userId);
+
+      allow create, update: if isOwner(userId)
+        && request.resource.data.keys().hasAll([
+          'userId',
+          'status',
+          'groupId',
+          'matchingKey',
+          'criteria',
+          'matchedAt',
+          'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'status',
+          'groupId',
+          'matchingKey',
+          'criteria',
+          'matchedAt',
+          'updatedAt'
+        ])
+        && request.resource.data.userId == userId
+        && request.resource.data.status == 'matched'
+        && request.resource.data.groupId is string
+        && request.resource.data.matchingKey is string
+        && request.resource.data.criteria is map
+        && request.resource.data.matchedAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+
+      allow delete: if false;
+    }
+
+    // Deny every path that is not explicitly covered above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
