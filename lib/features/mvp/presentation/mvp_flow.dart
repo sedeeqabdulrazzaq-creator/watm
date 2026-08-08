@@ -54,6 +54,7 @@ class _MvpFlowState extends State<MvpFlow> {
   bool _matchingBusy = false;
   String? _matchingError;
   String? _matchedGroupId;
+  CircleMatchResult? _matchedCircle;
   bool _authForExistingUser = false;
   bool _checkInBusy = false;
   String? _checkInError;
@@ -602,6 +603,7 @@ class _MvpFlowState extends State<MvpFlow> {
         goalCode: weightLossBandCode(_weightLossGoal),
         durationCode: _singleAnswerIndex(8),
         ageCode: ageBandCode(_age),
+        interactionTimeCode: _singleAnswerIndex(12),
         goal: weightLossBandLabel(_weightLossGoal),
         duration: _answerLabel(8, _coreQuestions[1]),
         ageGroup: ageBandLabel(_age),
@@ -611,11 +613,16 @@ class _MvpFlowState extends State<MvpFlow> {
         firstName: _nameController.text.trim(),
       );
       if (!mounted) return;
+      LiveQuery.reset();
       setState(() {
         _matchedGroupId = result.groupId;
+        _matchedCircle = result;
         _matchingBusy = false;
+        _matchingError = null;
+        _matchingRequested = false;
+        _step = 26;
       });
-      _go(26);
+      _saveProgress();
     } on TimeoutException {
       if (!mounted) return;
       setState(() {
@@ -1333,6 +1340,7 @@ Widget build(BuildContext context) {
                 goalCode: weightLossBandCode(_weightLossGoal),
                 durationCode: _singleAnswerIndex(8),
                 ageCode: ageBandCode(_age),
+                interactionTimeCode: _singleAnswerIndex(12),
               )}\n'
               '(هدف=${weightLossBandLabel(_weightLossGoal)}، '
               'مدة=${_answerLabel(8, _coreQuestions[1])}، '
@@ -1412,12 +1420,29 @@ Widget build(BuildContext context) {
       );
     }
 
+    final matchedCircle = _matchedCircle;
+    final initialData = matchedCircle == null
+        ? null
+        : <String, dynamic>{
+            'name': matchedCircle.groupName,
+            'goal': matchedCircle.goal,
+            'duration': matchedCircle.duration,
+            'ageGroup': matchedCircle.ageGroup,
+            'interactionTime': '',
+            'status': matchedCircle.status,
+            'memberCount': matchedCircle.memberCount,
+            'maxMembers': kCircleMaxMembers,
+          };
+
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: LiveQuery.doc(
         FirebaseFirestore.instance.collection('groups').doc(groupId),
       ),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
+          if (initialData != null) {
+            return _buildCircleReadyPage(groupId, initialData, showLoading: true);
+          }
           return WatmPage(
             title: 'تعذر تحميل دائرتك',
             subtitle: 'تحقق من الاتصال ثم أعد المحاولة.',
@@ -1429,6 +1454,9 @@ Widget build(BuildContext context) {
           );
         }
         if (!snapshot.hasData) {
+          if (initialData != null) {
+            return _buildCircleReadyPage(groupId, initialData, showLoading: true);
+          }
           return const WatmPage(
             title: 'نجهّز دائرتك',
             children: [
@@ -1437,7 +1465,7 @@ Widget build(BuildContext context) {
             ],
           );
         }
-        final data = snapshot.data?.data();
+        final data = snapshot.data?.data() ?? initialData;
         if (data == null) {
           return WatmPage(
             title: 'تعذر تحميل دائرتك',
@@ -1464,7 +1492,7 @@ Widget build(BuildContext context) {
         final groupName = buildCircleDisplayName(
           goal: firstNonEmptyString(data, ['goal']),
           duration: firstNonEmptyString(data, ['duration']),
-          ageGroup: firstNonEmptyString(data, ['ageGroup']),
+          interactionTime: firstNonEmptyString(data, ['interactionTime']),
           fallback: storedGroupName,
         );
         final statusText = status == 'full'
@@ -1491,94 +1519,10 @@ Widget build(BuildContext context) {
           builder: (context, membersSnapshot) {
             final memberDocs = membersSnapshot.data?.docs;
             final memberCount =
-                memberDocs != null && memberDocs.isNotEmpty
+                memberDocs != null && membersSnapshot.hasData && memberDocs.isNotEmpty
                     ? memberDocs.length
-                    : 1;
-            return WatmPage(
-          children: [
-            const SizedBox(height: 36),
-            const Center(
-              child: CircleAvatar(
-                radius: 54,
-                backgroundColor: AppColors.nature,
-                child: Icon(
-                  Icons.groups_rounded,
-                  size: 50,
-                  color: AppColors.universe,
-                ),
-              ),
-            ),
-            const SizedBox(height: 26),
-            Text(
-              status == 'forming'
-                  ? 'تم إنشاء دائرتك تلقائياً'
-                  : 'دائرتك أصبحت جاهزة',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.sea,
-                fontSize: 12,
-              ),
-            ),
-            Text(
-              groupName,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w700,
-                height: 1.6,
-              ),
-            ),
-            const SizedBox(height: 20),
-            WatmCard(
-              child: Column(
-                children: [
-                  ResultRow(
-                    label: 'الأعضاء',
-                    value: '$memberCount من $maxMembers',
-                  ),
-                  ResultRow(label: 'الحالة', value: statusText),
-                  ResultRow(
-                    label: 'الهدف',
-                    value: firstNonEmptyString(
-                      data,
-                      ['goal'],
-                      fallback: 'هدف مشترك',
-                    ),
-                  ),
-                  ResultRow(
-                    label: 'المدة',
-                    value: firstNonEmptyString(
-                      data,
-                      ['duration'],
-                      fallback: 'مرنة',
-                    ),
-                  ),
-                  ResultRow(
-                    label: 'الفئة العمرية',
-                    value: firstNonEmptyString(
-                      data,
-                      ['ageGroup'],
-                      fallback: 'متقاربة',
-                    ),
-                  ),
-                  if (_debugMatchingInfoEnabled)
-                    ResultRow(
-                      label: 'مفتاح المطابقة (اختبار)',
-                      value: firstNonEmptyString(
-                        data,
-                        ['matchingKey'],
-                        fallback: '—',
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-          bottom: WatmButton(
-            label: 'تعرف على أعضاء دائرتي',
-            onPressed: _next,
-          ),
-        );
+                    : (initialData != null ? parseIntOrZero(initialData['memberCount']) : 1);
+            return _buildCircleReadyPage(groupId, data, memberCount: memberCount, maxMembers: maxMembers, statusText: statusText, groupName: groupName);
           },
         );
       },
@@ -1679,6 +1623,106 @@ Widget build(BuildContext context) {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildCircleReadyPage(
+    String groupId,
+    Map<String, dynamic> data, {
+    int memberCount = 1,
+    int maxMembers = kCircleMaxMembers,
+    String statusText = 'قيد التكوين — يبدأ النشاط عند $kCircleMinimumStartMembers أعضاء',
+    String groupName = 'دائرتك',
+    bool showLoading = false,
+  }) {
+    return WatmPage(
+      children: [
+        const SizedBox(height: 36),
+        const Center(
+          child: CircleAvatar(
+            radius: 54,
+            backgroundColor: AppColors.nature,
+            child: Icon(
+              Icons.groups_rounded,
+              size: 50,
+              color: AppColors.universe,
+            ),
+          ),
+        ),
+        const SizedBox(height: 26),
+        Text(
+          statusText == 'اكتملت الدائرة' || statusText.startsWith('بدأ')
+              ? 'دائرتك جاهزة'
+              : 'تم إنشاء دائرتك تلقائياً',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: AppColors.sea,
+            fontSize: 12,
+          ),
+        ),
+        Text(
+          groupName,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w700,
+            height: 1.6,
+          ),
+        ),
+        const SizedBox(height: 20),
+        WatmCard(
+          child: Column(
+            children: [
+              ResultRow(
+                label: 'الأعضاء',
+                value: '$memberCount من $maxMembers',
+              ),
+              ResultRow(label: 'الحالة', value: statusText),
+              ResultRow(
+                label: 'الهدف',
+                value: firstNonEmptyString(
+                  data,
+                  ['goal'],
+                  fallback: 'هدف مشترك',
+                ),
+              ),
+              ResultRow(
+                label: 'المدة',
+                value: firstNonEmptyString(
+                  data,
+                  ['duration'],
+                  fallback: 'مرنة',
+                ),
+              ),
+              ResultRow(
+                label: 'الفئة العمرية',
+                value: firstNonEmptyString(
+                  data,
+                  ['ageGroup'],
+                  fallback: 'متقاربة',
+                ),
+              ),
+              if (_debugMatchingInfoEnabled)
+                ResultRow(
+                  label: 'مفتاح المطابقة (اختبار)',
+                  value: firstNonEmptyString(
+                    data,
+                    ['matchingKey'],
+                    fallback: '—',
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (showLoading) ...[
+          const SizedBox(height: 18),
+          const CircularProgressIndicator(color: AppColors.sea),
+        ],
+      ],
+      bottom: WatmButton(
+        label: 'تعرف على أعضاء دائرتي',
+        onPressed: _next,
+      ),
     );
   }
 

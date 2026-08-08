@@ -23,3 +23,5 @@ ui-debug.log
 .vscode/
 *.iml
 .DS_Store
+
+.emulator-data/

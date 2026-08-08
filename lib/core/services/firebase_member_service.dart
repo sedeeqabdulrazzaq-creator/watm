@@ -44,7 +44,7 @@ class CircleMatchResult {
       groupName: buildCircleDisplayName(
         goal: goal,
         duration: duration,
-        ageGroup: ageGroup,
+        interactionTime: firstNonEmptyString(data, ['interactionTime']),
         fallback: storedName,
       ),
       memberCount: parseIntOrZero(data['memberCount']),
@@ -262,6 +262,7 @@ class FirebaseMemberService {
     required int goalCode,
     required int durationCode,
     required int ageCode,
+    required int interactionTimeCode,
     required String goal,
     required String duration,
     required String ageGroup,
@@ -276,6 +277,7 @@ class FirebaseMemberService {
       goalCode: goalCode,
       durationCode: durationCode,
       ageCode: ageCode,
+      interactionTimeCode: interactionTimeCode,
     );
     final userReference = _firestore.collection('users').doc(user.uid);
     final groupCollection = _firestore.collection('groups');
@@ -373,6 +375,7 @@ class FirebaseMemberService {
                   goal: goal,
                   duration: duration,
                   ageGroup: ageGroup,
+                  interactionTime: interactionTime,
                   timestamp: timestamp,
                 );
 
@@ -663,6 +666,7 @@ return circle;
     required String goal,
     required String duration,
     required String ageGroup,
+    required String interactionTime,
     required Object timestamp,
   }) {
     final reference = groupCollection.doc();
@@ -674,12 +678,13 @@ return circle;
       'name': buildCircleDisplayName(
         goal: goal,
         duration: duration,
-        ageGroup: ageGroup,
+        interactionTime: interactionTime,
       ),
       'matchingKey': matchingKey,
       'goal': goal,
       'duration': duration,
       'ageGroup': ageGroup,
+      'interactionTime': interactionTime,
       'memberCount': memberCount,
       'maxMembers': kCircleMaxMembers,
       'minimumStartMembers': kCircleMinimumStartMembers,

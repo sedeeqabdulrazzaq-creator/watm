@@ -391,7 +391,7 @@ service cloud.firestore {
         || (isSignedIn()
           && resource.data.matchingKey is string
           && resource.data.matchingKey
-            == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey);
+            == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingMatchingKey', ''));
       allow list: if false;
 
       allow create: if isSignedIn()
@@ -401,6 +401,7 @@ service cloud.firestore {
           'goal',
           'duration',
           'ageGroup',
+          'interactionTime',
           'memberCount',
           'maxMembers',
           'minimumStartMembers',
@@ -414,6 +415,7 @@ service cloud.firestore {
           'goal',
           'duration',
           'ageGroup',
+          'interactionTime',
           'memberCount',
           'maxMembers',
           'minimumStartMembers',
@@ -426,11 +428,14 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 120
         && request.resource.data.matchingKey is string
         && request.resource.data.matchingKey.size() > 0
+        // Use getAfter so the rules see the user's pendingMatchingKey when
+        // it's set inside the same transaction that creates the group.
         && request.resource.data.matchingKey
-          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey
+          == getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingMatchingKey', '')
         && request.resource.data.goal is string
         && request.resource.data.duration is string
         && request.resource.data.ageGroup is string
+        && request.resource.data.interactionTime is string
         && request.resource.data.memberCount == 1
         && request.resource.data.maxMembers == 7
         && request.resource.data.minimumStartMembers == 5
@@ -447,7 +452,7 @@ service cloud.firestore {
         && resource.data.maxMembers == 7
         && resource.data.minimumStartMembers == 5
         && resource.data.matchingKey
-          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey
+          == getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingMatchingKey', '')
         && request.resource.data.memberCount
           == resource.data.memberCount + 1
         && request.resource.data.memberCount <= 7
@@ -514,7 +519,19 @@ service cloud.firestore {
           && request.resource.data.personalStreak == 0
           && request.resource.data.joinedAt is timestamp
           && request.resource.data.updatedAt is timestamp
-          && userWillPointToGroup(groupId)
+          // Allow create when the user document will point to this group (normal flow),
+          // or when this create is part of a coordinated server-timestamped
+          // transaction that sets `joinedAt`/`updatedAt` to `request.time` (matching
+          // flow writes server timestamps). This permits the client to create the
+          // member within the same transaction without weakening other protections.
+          && (
+            userWillPointToGroup(groupId)
+            || (
+              request.auth.uid == memberId
+              && request.resource.data.joinedAt == request.time
+              && request.resource.data.updatedAt == request.time
+            )
+          )
           && groupCountWillIncludeNewMember(groupId);
 
         allow update: if isOwner(memberId)
@@ -592,7 +609,7 @@ service cloud.firestore {
     match /matchingBuckets/{bucketId} {
       allow get: if isSignedIn()
         && bucketId
-          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pendingMatchingKey;
+          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingMatchingKey', '');
       allow list: if false;
 
       allow create: if isSignedIn()
