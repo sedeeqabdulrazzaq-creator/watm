@@ -100,21 +100,19 @@ class _DashboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final firstName = firstNonEmptyString(profile, const ['firstName', 'displayName'], fallback: 'عضو WATM');
     final groupId = firstNonEmptyString(profile, const ['groupId', 'circleId']);
-    final daysLeft = _daysLeft(profile['trialStartedAt']);
+    // Trials removed: do not show trial days or expired messages.
+    final daysLeft = 0;
     final heading = switch (activeIndex) {
-      0 => ('حسابي', 'بيانات عضويتك وخصوصيتك.'),
+      0 => ('حسابي', 'بيانات حسابك وخصوصيتك.'),
       1 => ('تقدمي', 'شاهد التزامك وخطواتك في رحلة خسارة الوزن.'),
       2 => ('جدولي', 'نظّم مواعيدك اليومية والأسبوعية وفعّل التذكير.'),
       3 => ('دائرتي', 'أشخاص يخسرون الوزن معك، بلا مقارنة أو أحكام.'),
-      _ => ('أهلاً $firstName',
-          daysLeft > 0
-              ? 'متبقي $daysLeft أيام من تجربتك. لا توجد بطاقة أو دفعة تلقائية.'
-              : 'انتهت التجربة المجانية. بيانات رحلتك محفوظة.'),
+      _ => ('أهلاً $firstName', 'الوصول مجاني دائمًا'),
     };
 
     return WatmPage(
       pinBottom: true,
-      eyebrow: activeIndex == 4 ? 'تجربتك المجانية' : 'WATM',
+      eyebrow: activeIndex == 4 ? 'الوصول مجاني دائمًا' : 'WATM',
       title: heading.$1,
       subtitle: heading.$2,
       bottom: WatmBottomNavigation(
@@ -217,10 +215,4 @@ class _DashboardPage extends StatelessWidget {
         ],
     };
   }
-}
-
-int _daysLeft(dynamic value) {
-  if (value is! Timestamp) return 7;
-  final elapsed = DateTime.now().difference(value.toDate()).inDays;
-  return (7 - elapsed).clamp(0, 7).toInt();
 }

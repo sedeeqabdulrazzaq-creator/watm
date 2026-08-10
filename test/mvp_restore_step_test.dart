@@ -17,7 +17,7 @@ void main() {
       }
     });
 
-    test('expired trial resumes at the renewal screen', () {
+    test('expired trial resumes at the member dashboard (expired treated as free access)', () {
       expect(
         normalizeMvpRestoredStep(
           step: 31,
@@ -25,7 +25,7 @@ void main() {
           isTrial: true,
           trialDaysLeft: 0,
         ),
-        34,
+        28,
       );
     });
 
@@ -41,7 +41,7 @@ void main() {
       );
     });
 
-    test('user without member access returns to the free trial offer', () {
+    test('user without member access is sent to basic information (no trial)', () {
       expect(
         normalizeMvpRestoredStep(
           step: 31,
@@ -49,7 +49,7 @@ void main() {
           isTrial: false,
           trialDaysLeft: 7,
         ),
-        16,
+        6,
       );
     });
 

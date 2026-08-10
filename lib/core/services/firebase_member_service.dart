@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint;
+import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint, kDebugMode;
 
 import '../utils/circle_settings.dart';
 import '../utils/firestore_helpers.dart';
@@ -69,7 +69,7 @@ final ValueNotifier<List<String>> matchingTrace =
     ValueNotifier<List<String>>(<String>[]);
 
 void _trace(String message) {
-  debugPrint('[matchCurrentUser] $message');
+  if (kDebugMode) debugPrint('[matchCurrentUser] $message');
   final next = <String>[...matchingTrace.value, message];
   matchingTrace.value =
       next.length > 14 ? next.sublist(next.length - 14) : next;
@@ -152,7 +152,6 @@ class FirebaseMemberService {
       }
       if (!snapshot.exists) {
         values['createdAt'] = FieldValue.serverTimestamp();
-        values['membershipStatus'] = 'applicant';
       }
       transaction.set(reference, values, SetOptions(merge: true));
     });
@@ -216,46 +215,9 @@ class FirebaseMemberService {
   }
 
   Future<DateTime> activateTrial() async {
-    final user = _requireUser();
-    final reference = _firestore.collection('users').doc(user.uid);
-    // قراءة ثم دمج، لا معاملة.
-    //
-    // Firestore يضيف على كل معاملة شرط `currentDocument.updateTime`، أي
-    // «نفّذ فقط إن لم تتغيّر الوثيقة منذ القراءة». ووثيقة المستخدم هنا
-    // مزدحمة: `saveProgress` تكتب فيها من ثلاثة عشر موضعاً، والمطابقة
-    // تكتب فيها ثلاث مرات (المفتاح المؤقّت، ثم groupId، ثم حذف المفتاح).
-    // فكانت كل كتابة من هؤلاء تُبطل هذي المعاملة، فتعيد المحاولة، فتصطدم
-    // من جديد — عاصفة `failed-precondition` كل ثانية تخنق الاتصال.
-    //
-    // ولا حاجة إلى المعاملة أصلاً: الحقول المكتوبة لا يعتمد أيٌّ منها على
-    // قيمة حقل آخر وقت الكتابة، وأسوأ ما قد ينتج عن تسابق نادر هنا هو
-    // كتابة `trialStartedAt` مرتين بفارق أجزاء من الثانية.
-    final snapshot = await reference.get();
-    final data = snapshot.data();
-    final status = data?['membershipStatus']?.toString().toLowerCase();
-    final values = <String, Object?>{
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-    if (data?['trialStartedAt'] == null) {
-      values['trialStartedAt'] = FieldValue.serverTimestamp();
-    }
-    if (status == null || status == 'applicant' || status == 'trial') {
-      values['trialStatus'] = 'active';
-      values['membershipStatus'] = 'trial';
-    }
-    if (!snapshot.exists) {
-      values['createdAt'] = FieldValue.serverTimestamp();
-    }
-    await reference.set(values, SetOptions(merge: true));
-
-    for (var attempt = 0; attempt < 3; attempt++) {
-      final snapshot =
-          await reference.get(const GetOptions(source: Source.server));
-      final timestamp = snapshot.data()?['trialStartedAt'];
-      if (timestamp is Timestamp) return timestamp.toDate();
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-    }
-    throw StateError('تعذر تأكيد وقت بدء التجربة من الخادم.');
+    // Trial/membership fields are deprecated in the free build.
+    // Keep this method as a safe no-op for older callers.
+    return DateTime.now();
   }
 
   Future<CircleMatchResult> matchCurrentUser({

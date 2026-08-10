@@ -6,20 +6,22 @@
 int normalizeMvpRestoredStep({
   required int step,
   required bool hasMemberAccess,
+  // Trial/membership flags are deprecated in the free build.
   required bool isTrial,
   required int trialDaysLeft,
 }) {
   final safeStep = step.clamp(0, 34).toInt();
 
-  if (!hasMemberAccess && safeStep >= 16) {
-    return 16;
+  // If the user already has member access (e.g., belongs to a circle)
+  // restore them to the dashboard.
+  if (hasMemberAccess && safeStep >= 28) {
+    return 28;
   }
 
-  if (hasMemberAccess && safeStep >= 28) {
-    if (isTrial && trialDaysLeft <= 0) {
-      return 34;
-    }
-    return 28;
+  // If the saved step pointed at a trial/renewal flow, map it to the
+  // free onboarding start (basic information) so the user can continue.
+  if (!hasMemberAccess && safeStep >= 16) {
+    return 6;
   }
 
   return safeStep;
