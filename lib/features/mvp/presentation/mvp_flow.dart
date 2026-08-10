@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/services/firebase_member_service.dart';
@@ -47,8 +48,6 @@ class _MvpFlowState extends State<MvpFlow> {
   StreamSubscription<User?>? _authSubscription;
   SharedPreferences? _preferences;
   int _streak = 0;
-  DateTime? _trialStartedAt;
-  String? _membershipStatus;
   FirebaseMemberService? _firebase;
   bool _matchingRequested = false;
   bool _matchingBusy = false;
@@ -59,40 +58,11 @@ class _MvpFlowState extends State<MvpFlow> {
   bool _checkInBusy = false;
   String? _checkInError;
 
-  String? get _normalizedMembershipStatus =>
-      _membershipStatus?.trim().toLowerCase();
+  // Access is always granted in the free build: no trial/membership gating.
+  bool get _hasMemberAccess => true;
 
-  bool get _hasMemberAccess {
-    const memberStatuses = {'trial', 'active', 'member', 'paid'};
-    const blockedStatuses = {'expired', 'cancelled', 'canceled', 'suspended'};
-    final status = _normalizedMembershipStatus;
-    return (status != null && memberStatuses.contains(status)) ||
-        (_trialStartedAt != null && !blockedStatuses.contains(status));
-  }
-
-  bool get _isTrial {
-    final status = _normalizedMembershipStatus;
-    const paidStatuses = {'active', 'member', 'paid'};
-    return status == 'trial' ||
-        (_trialStartedAt != null && !paidStatuses.contains(status));
-  }
-
-  int get _trialDaysLeft {
-    final startedAt = _trialStartedAt;
-    if (startedAt == null) return 7;
-    final elapsed = DateTime.now().difference(startedAt).inDays;
-    final remaining = 7 - elapsed;
-    if (remaining < 0) return 0;
-    if (remaining > 7) return 7;
-    return remaining;
-  }
-
-  int get _trialDay {
-    final day = 8 - _trialDaysLeft;
-    if (day < 1) return 1;
-    if (day > 7) return 7;
-    return day;
-  }
+  // Trials are removed — treat all users as free members.
+  bool get _isTrial => false;
 
   static const _coreQuestions = <QuestionData>[
     QuestionData(
@@ -327,29 +297,8 @@ class _MvpFlowState extends State<MvpFlow> {
         ['groupId', 'circleId'],
       );
       _streak = preferences.getInt('watm_streak') ?? 0;
-      final localMembershipStatus =
-          preferences.getString('watm_membership_status');
-      _membershipStatus = localMembershipStatus;
-      final cloudMembershipStatus =
-          cloudProfile?['membershipStatus']?.toString().trim().toLowerCase();
-      if (cloudMembershipStatus != null &&
-          cloudMembershipStatus.isNotEmpty) {
-        // Trial activation is local-first. Do not let an older cloud-side
-        // applicant value undo a trial that is still waiting to synchronize.
-        final localTrialPendingSync =
-            localMembershipStatus?.trim().toLowerCase() == 'trial' &&
-                cloudMembershipStatus == 'applicant';
-        if (!localTrialPendingSync) {
-          _membershipStatus = cloudMembershipStatus;
-        }
-      }
-      final trialValue = preferences.getString('watm_trial_started_at');
-      _trialStartedAt =
-          trialValue == null ? null : DateTime.tryParse(trialValue);
-      final cloudTrial = cloudProfile?['trialStartedAt'];
-      if (cloudTrial is Timestamp) {
-        _trialStartedAt = cloudTrial.toDate();
-      }
+      // Trials and membership status are deprecated in the free build.
+      // Ignore any local or cloud membership/trial markers and proceed.
       final cloudStep = cloudProfile?['onboardingStep'];
       final restoredStep = cloudStep is int && cloudStep > (savedStep ?? -1)
           ? cloudStep
@@ -378,7 +327,7 @@ class _MvpFlowState extends State<MvpFlow> {
         step: _step,
         hasMemberAccess: _hasMemberAccess,
         isTrial: _isTrial,
-        trialDaysLeft: _trialDaysLeft,
+        trialDaysLeft: 0,
       );
       if (_step >= 7 && _step <= 27 && !_weightGoalValid) {
         _step = 6;
@@ -387,14 +336,7 @@ class _MvpFlowState extends State<MvpFlow> {
     // Also repairs stale steps created by older builds in local storage and
     // Firestore, so the wrong activity does not return on the next launch.
     await _saveProgress();
-    final firebase = _firebase;
-    final cloudTrialStarted = cloudProfile?['trialStartedAt'] is Timestamp;
-    if (firebase != null &&
-        firebase.currentUser != null &&
-        _normalizedMembershipStatus == 'trial' &&
-        !cloudTrialStarted) {
-      unawaited(_syncTrialActivation(firebase, preferences));
-    }
+    // No server-side trial activation needed in the free build.
   }
 
   Future<void> _saveProgress() async {
@@ -408,17 +350,10 @@ class _MvpFlowState extends State<MvpFlow> {
       step: _step,
       hasMemberAccess: _hasMemberAccess,
       isTrial: _isTrial,
-      trialDaysLeft: _trialDaysLeft,
+      trialDaysLeft: 0,
     );
     await preferences.setInt('watm_mvp_step', persistedStep);
     await preferences.setString('watm_mvp_answers', jsonEncode(answers));
-    final membershipStatus = _membershipStatus;
-    if (membershipStatus != null && membershipStatus.isNotEmpty) {
-      await preferences.setString(
-        'watm_membership_status',
-        membershipStatus,
-      );
-    }
     final firebase = _firebase;
     if (firebase?.currentUser != null) {
       try {
@@ -517,53 +452,6 @@ class _MvpFlowState extends State<MvpFlow> {
     }
   }
 
-  Future<void> _activateFreeTrial() async {
-    final preferences =
-        _preferences ?? await SharedPreferences.getInstance();
-    _preferences = preferences;
-    final localStartedAt = _trialStartedAt ?? DateTime.now();
-
-    // Activate locally before contacting Firestore so this primary action is
-    // never blocked by a slow connection or security-rule configuration.
-    await preferences.setString(
-      'watm_trial_started_at',
-      localStartedAt.toIso8601String(),
-    );
-    await preferences.setString('watm_membership_status', 'trial');
-    if (!mounted) return;
-    setState(() {
-      _trialStartedAt = localStartedAt;
-      _membershipStatus = 'trial';
-    });
-    _next();
-
-    final firebase = _firebase;
-    if (firebase != null && firebase.currentUser != null) {
-      unawaited(_syncTrialActivation(firebase, preferences));
-    }
-  }
-
-  Future<void> _syncTrialActivation(
-    FirebaseMemberService firebase,
-    SharedPreferences preferences,
-  ) async {
-    try {
-      final serverStartedAt = await firebase.activateTrial();
-      await preferences.setString(
-        'watm_trial_started_at',
-        serverStartedAt.toIso8601String(),
-      );
-      if (!mounted) return;
-      setState(() {
-        _trialStartedAt = serverStartedAt;
-        _membershipStatus = 'trial';
-      });
-      await _saveProgress();
-    } catch (_) {
-      // Keep the local trial active; cloud progress can synchronize later.
-    }
-  }
-
   int _singleAnswerIndex(int step) {
     final values = _answers[step];
     if (values == null || values.isEmpty) return 0;
@@ -593,11 +481,13 @@ class _MvpFlowState extends State<MvpFlow> {
       _matchingBusy = true;
       _matchingError = null;
     });
-    debugPrint(
-      '[_startAutomaticMatching] calling matchCurrentUser age=$_age '
-      'ageCode=${ageBandCode(_age)} goalCode=${weightLossBandCode(_weightLossGoal)} '
-      'durationCode=${_singleAnswerIndex(8)}',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        '[_startAutomaticMatching] calling matchCurrentUser age=$_age '
+        'ageCode=${ageBandCode(_age)} goalCode=${weightLossBandCode(_weightLossGoal)} '
+        'durationCode=${_singleAnswerIndex(8)}',
+      );
+    }
     try {
       final result = await firebase.matchCurrentUser(
         goalCode: weightLossBandCode(_weightLossGoal),
@@ -661,47 +551,6 @@ class _MvpFlowState extends State<MvpFlow> {
     _saveProgress();
   }
 
-  Future<void> _restartJourney() async {
-    final preferences =
-        _preferences ?? await SharedPreferences.getInstance();
-    await preferences.remove('watm_mvp_step');
-    await preferences.remove('watm_mvp_answers');
-    await preferences.remove('watm_phone');
-    await preferences.remove('watm_name');
-    await preferences.remove('watm_age');
-    await preferences.remove('watm_city');
-    await preferences.remove('watm_current_weight_kg');
-    await preferences.remove('watm_target_weight_kg');
-    await preferences.remove('watm_last_check_in');
-    await preferences.remove('watm_last_check_in_note');
-    await preferences.remove('watm_streak');
-    await preferences.remove('watm_encouragements_sent');
-    await preferences.remove('watm_trial_started_at');
-    await preferences.remove('watm_membership_status');
-    await _firebase?.signOut();
-    if (!mounted) return;
-    setState(() {
-      _answers.clear();
-      _nameController.clear();
-      _ageController.clear();
-      _cityController.clear();
-      _currentWeightController.clear();
-      _targetWeightController.clear();
-      _checkInNoteController.clear();
-      _streak = 0;
-      _trialStartedAt = null;
-      _membershipStatus = null;
-      _matchingRequested = false;
-      _matchingBusy = false;
-      _matchingError = null;
-      _matchedGroupId = null;
-      _authForExistingUser = false;
-      _checkInBusy = false;
-      _checkInError = null;
-      _step = 1;
-    });
-  }
-
   @override
   void dispose() {
     _splashTimer?.cancel();
@@ -728,7 +577,7 @@ class _MvpFlowState extends State<MvpFlow> {
   }
 
 void _go(int step) {
-  debugPrint('[_go] BEFORE current=$_step target=$step');
+  if (kDebugMode) debugPrint('[_go] BEFORE current=$_step target=$step');
 
   setState(() {
     if (step < 0) {
@@ -740,7 +589,7 @@ void _go(int step) {
     }
   });
 
-  debugPrint('[_go] AFTER current=$_step');
+  if (kDebugMode) debugPrint('[_go] AFTER current=$_step');
 
   _saveProgress();
 }
@@ -772,7 +621,7 @@ void _go(int step) {
 
  @override
 Widget build(BuildContext context) {
-  debugPrint('[BUILD] step=$_step');
+  if (kDebugMode) debugPrint('[BUILD] step=$_step');
 
   return Scaffold(
       backgroundColor: AppColors.muted,
@@ -814,9 +663,8 @@ Widget build(BuildContext context) {
       return _question(_coreQuestions[_step - 7]);
     }
     if (_step == 15) return _assessment();
-    if (_step == 16) return _trialOffer();
-    if (_step == 17) return _trialActivated();
-    if (_step == 18) return _trialWelcome();
+    // Trial screens removed: continue to profile/detail questions directly.
+    if (_step >= 16 && _step <= 18) return _question(_detailQuestions[0]);
     if (_step >= 19 && _step <= 24) {
       return _question(
         _detailQuestions[_step - 19],
@@ -832,7 +680,7 @@ Widget build(BuildContext context) {
     // Legacy transient steps used hard-coded demo people and metrics. They are
     // intentionally redirected to the Firebase-backed member dashboard.
     if (_step >= 31 && _step <= 33) return _memberDashboardOrSignedOut();
-    return _renewal();
+    return _memberDashboardOrSignedOut();
   }
 
   Widget _splash() {
@@ -1104,7 +952,7 @@ Widget build(BuildContext context) {
           const SizedBox(height: 20),
           const Text('خطة البداية أصبحت جاهزة', textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600, height: 1.55)),
           const SizedBox(height: 8),
-          const Text('ستحصل على تجربة كاملة بلا دفع، داخل دائرة خاصة محدودة بـ7 أعضاء متقاربين في الهدف والجدية.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.earth, fontSize: 14, height: 1.6)),
+          const Text('تمت إضافة خطة البداية. تابع لإكمال ملفك وسيتم إجراء المطابقة تلقائياً.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.earth, fontSize: 14, height: 1.6)),
           const SizedBox(height: 18),
           const Center(child: Chip(backgroundColor: AppColors.universe, label: Text('مستوى الجدية: مرتفع', style: TextStyle(color: Colors.white)))),
           const SizedBox(height: 18),
@@ -1143,116 +991,10 @@ Widget build(BuildContext context) {
         ],
         bottom: Column(
           children: [
-            WatmButton(label: 'ابدأ التجربة المجانية', onPressed: _next),
+            WatmButton(label: 'متابعة', onPressed: _next),
             TextButton(onPressed: () => _go(7), child: const Text('تعديل إجاباتي')),
           ],
         ),
-      );
-
-  Widget _trialOffer() => WatmPage(
-        onBack: _back,
-        eyebrow: 'تم قبول طلبك',
-        title: 'جرّب WATM لمدة أسبوع كامل',
-        subtitle:
-            'ادخل دائرتك واستخدم تسجيل اليوم والتشجيع والمراجعة الأسبوعية لمدة 7 أيام من دون دفع أو إدخال بطاقة.',
-        children: const [
-          WatmCard(
-            color: AppColors.seaSoft,
-            borderColor: AppColors.sea,
-            child: Column(
-              children: [
-                ResultRow(label: 'مدة التجربة', value: '7 أيام كاملة'),
-                ResultRow(label: 'الدفع الآن', value: 'لا يوجد'),
-                ResultRow(label: 'البطاقة المصرفية', value: 'غير مطلوبة'),
-                ResultRow(label: 'الوصول', value: 'جميع خصائص العضو'),
-              ],
-            ),
-          ),
-          SizedBox(height: 18),
-          WatmCard(
-            color: AppColors.natureSoft,
-            borderColor: AppColors.nature,
-            child: Text(
-              'لن يتم تجديد أي شيء تلقائياً. في نهاية الأسبوع تختار أنت إن كنت تريد الاستمرار.',
-              style: TextStyle(color: AppColors.universe, height: 1.7),
-            ),
-          ),
-        ],
-        bottom: WatmButton(
-          label: 'ابدأ تجربتي المجانية',
-          onPressed: _activateFreeTrial,
-        ),
-      );
-
-  Widget _trialActivated() => WatmPage(
-        children: [
-          const SizedBox(height: 36),
-          const Center(
-            child: CircleAvatar(
-              radius: 54,
-              backgroundColor: AppColors.nature,
-              child: Icon(
-                Icons.celebration_rounded,
-                size: 48,
-                color: AppColors.universe,
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'بدأ أسبوعك المجاني',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'لا يوجد دفع ولا بطاقة. سنجهّز ملفك ثم نطابقك مع دائرة تجريبية مناسبة.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.earth, height: 1.7),
-          ),
-          const SizedBox(height: 22),
-          WatmCard(
-            child: Column(
-              children: [
-                const ResultRow(label: 'الحالة', value: 'تجربة فعّالة'),
-                ResultRow(
-                  label: 'الوقت المتبقي',
-                  value: '$_trialDaysLeft أيام',
-                ),
-                const ResultRow(
-                  label: 'التجديد التلقائي',
-                  value: 'غير مفعّل',
-                ),
-              ],
-            ),
-          ),
-        ],
-        bottom: WatmButton(label: 'متابعة', onPressed: _next),
-      );
-
-  Widget _trialWelcome() => WatmPage(
-        eyebrow: 'تجربتك المجانية • اليوم الأول',
-        title: 'أسبوعك الأول لبناء زخم خسارة الوزن.',
-        subtitle:
-            'سجّل التزاماتك الثلاثة، شجّع أعضاء دائرتك، واختبر هل يساعدك هذا النظام على الاستمرار.',
-        children: const [
-          StepCard(
-            number: '1',
-            title: 'أكمل ملف العضوية',
-            body: 'لنحسّن توافقك مع أعضاء الدائرة.',
-          ),
-          StepCard(
-            number: '2',
-            title: 'ادخل دائرتك',
-            body: 'تعرّف إلى القائدة والأعضاء الحقيقيين.',
-          ),
-          StepCard(
-            number: '3',
-            title: 'سجّل التزاماتك',
-            body: 'الحركة والطعام والماء خلال أقل من دقيقة.',
-          ),
-        ],
-        bottom: WatmButton(label: 'أكمل ملفي', onPressed: _next),
       );
 
   Widget _matching() {
@@ -1739,7 +1481,7 @@ Widget build(BuildContext context) {
 
   Widget _dailyCheckIn() => WatmPage(
         onBack: () => _go(28),
-        eyebrow: 'تسجيل اليوم • اليوم $_trialDay من 7',
+        eyebrow: 'تسجيل اليوم',
         title: 'ماذا أنجزت لخسارة الوزن اليوم؟',
         subtitle: 'اختر ما أنجزته فعلاً. لا نحتاج يوماً مثالياً حتى نستمر.',
         children: [
@@ -1835,102 +1577,5 @@ Widget build(BuildContext context) {
     _saveProgress();
   }
 
-  Widget _renewal() {
-    final selected = _answers[_step];
-    const plans = [
-      (
-        '٢١ يوماً',
-        'بداية مركزة لبناء الزخم',
-        'متابعة يومية • مراجعتان',
-        '9,999 د.ع',
-      ),
-      (
-        '٣ أشهر',
-        'التغيير الحقيقي المستدام',
-        'دائرة مستقرة • مراجعة أسبوعية',
-        '24,999 د.ع',
-      ),
-      (
-        'عضوية سنوية',
-        'لمن اختبر النظام ويريد الاستمرار',
-        'دورات متتابعة • سجل طويل',
-        '79,999 د.ع',
-      ),
-    ];
-    return WatmPage(
-      eyebrow: _trialDaysLeft == 0
-          ? 'انتهى أسبوعك المجاني'
-          : 'الاستمرار بعد التجربة',
-      title: 'هل تريد الاحتفاظ بمكانك داخل الدائرة؟',
-      subtitle:
-          'لن يتم خصم أي مبلغ تلقائياً. اختر العضوية المناسبة فقط إذا وجدت أن WATM يساعدك فعلاً على الاستمرار.',
-      children: [
-        WatmCard(
-          color: AppColors.natureSoft,
-          borderColor: AppColors.nature,
-          child: Text(
-            _trialDaysLeft == 0
-                ? 'اكتملت أيام التجربة السبعة. بياناتك محفوظة، ويعود الوصول الكامل بعد اختيار العضوية.'
-                : 'بقي $_trialDaysLeft أيام في تجربتك. يمكنك الاستمرار في التجربة قبل اتخاذ القرار.',
-            style: const TextStyle(
-              color: AppColors.universe,
-              height: 1.7,
-            ),
-          ),
-        ),
-        const SizedBox(height: 18),
-        for (var i = 0; i < plans.length; i++) ...[
-          PlanCard(
-            title: plans[i].$1,
-            headline: plans[i].$2,
-            details: plans[i].$3,
-            price: plans[i].$4,
-            recommended: i == 1,
-            selected: selected?.contains(i) ?? false,
-            onTap: () => _toggleAnswer(i),
-          ),
-          const SizedBox(height: 14),
-        ],
-      ],
-      bottom: Column(
-        children: [
-          WatmButton(
-            label: 'تأكيد اختيار العضوية',
-            onPressed: (selected?.isNotEmpty ?? false)
-                ? _showMembershipCheckout
-                : null,
-          ),
-          if (_trialDaysLeft > 0)
-            TextButton(
-              onPressed: () => _go(28),
-              child: Text('أكمل تجربتي ($_trialDaysLeft أيام متبقية)'),
-            ),
-          TextButton(
-            onPressed: _restartJourney,
-            child: const Text('إعادة تجربة النموذج من البداية'),
-          ),
-        ],
-      ),
-    );
-  }
 
-  Future<void> _showMembershipCheckout() async {
-    const names = ['عضوية 21 يوماً', 'عضوية 3 أشهر', 'العضوية السنوية'];
-    final selectedIndex = _answers[34]?.first ?? 1;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('تم اختيار العضوية'),
-        content: Text(
-          'اخترت ${names[selectedIndex]}. الدفع الإلكتروني غير متاح في هذه النسخة التجريبية، ولن يتم خصم أي مبلغ.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('حسناً'),
-          ),
-        ],
-      ),
-    );
-  }
 }

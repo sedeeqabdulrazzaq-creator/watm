@@ -193,12 +193,10 @@ service cloud.firestore {
       allow create: if isOwner(userId)
         && request.resource.data.keys().hasAll([
           'uid',
-          'membershipStatus',
           'createdAt',
           'updatedAt'
         ])
         && request.resource.data.uid == userId
-        && request.resource.data.membershipStatus == 'applicant'
         && request.resource.data.createdAt is timestamp
         && request.resource.data.updatedAt is timestamp
         && (!request.resource.data.keys().hasAny([
@@ -232,19 +230,6 @@ service cloud.firestore {
           'membershipStartedAt',
           'membershipEndsAt'
         ])
-        && (!request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(['membershipStatus'])
-          || (resource.data.get('membershipStatus', 'applicant')
-              in ['applicant', 'trial']
-            && request.resource.data.membershipStatus
-              in ['applicant', 'trial']))
-        && (!request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(['trialStatus'])
-          || request.resource.data.trialStatus == 'active')
-        && (!request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(['trialStartedAt'])
-          || (resource.data.get('trialStartedAt', null) == null
-            && request.resource.data.trialStartedAt == request.time))
         && (!request.resource.data.diff(resource.data).affectedKeys()
             .hasAny([
               'groupId',

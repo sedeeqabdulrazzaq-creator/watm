@@ -25,3 +25,5 @@ ui-debug.log
 .DS_Store
 
 .emulator-data/
+
+coverage/

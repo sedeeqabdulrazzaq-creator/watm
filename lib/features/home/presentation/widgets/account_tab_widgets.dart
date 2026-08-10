@@ -55,7 +55,7 @@ class AccountPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final city = firstNonEmptyString(profile, const ['city'], fallback: 'غير محددة');
-    final status = firstNonEmptyString(profile, const ['membershipStatus'], fallback: 'trial');
+    // Membership/trial flags are ignored in the free build.
     final currentWeight = parseWeightKg(profile['currentWeightKg']?.toString() ?? '');
     final targetWeight = parseWeightKg(profile['targetWeightKg']?.toString() ?? '');
     return Column(
@@ -76,8 +76,8 @@ class AccountPanel extends StatelessWidget {
           borderColor: AppColors.sea,
           child: Column(
             children: [
-              ProfileRow(label: 'حالة العضوية', value: status == 'trial' ? 'تجربة مجانية' : status),
-              ProfileRow(label: 'الأيام المتبقية', value: '$daysLeft'),
+              ProfileRow(label: 'حالة العضوية', value: 'الوصول مجاني دائمًا'),
+
               ProfileRow(label: 'المدينة', value: city),
               ProfileRow(
                 label: 'وزنك الحالي • خاص',

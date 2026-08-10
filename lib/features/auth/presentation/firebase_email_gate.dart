@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/services/firebase_member_service.dart';
@@ -38,8 +39,6 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
     'watm_last_check_in_note',
     'watm_streak',
     'watm_encouragements_sent',
-    'watm_trial_started_at',
-    'watm_membership_status',
   ];
 
   final _emailController = TextEditingController();
@@ -75,34 +74,70 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
       _error = null;
       _message = null;
     });
+    String phase = 'start';
     try {
       final email = _emailController.text.trim();
       final password = _passwordController.text;
+      if (kDebugMode) debugPrint('[_submit] Starting ${_createAccount ? 'createAccount' : 'signIn'}');
+
       late UserCredential credential;
+      phase = _createAccount ? 'auth:createUser' : 'auth:signIn';
       if (_createAccount) {
+        if (kDebugMode) debugPrint('[_submit] بدء إنشاء الحساب.');
         credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
           email: email,
           password: password,
         );
+        if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded (create).');
       } else {
+        if (kDebugMode) debugPrint('[_submit] بدء تسجيل الدخول.');
         credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
           password: password,
         );
+        if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded (signIn).');
       }
+
       final user = credential.user;
       if (user == null) {
+        phase = 'auth:no-user';
         throw StateError('لم يكتمل تسجيل الدخول.');
       }
+      if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded');
+
+      phase = 'prepareLocalJourney';
+      if (kDebugMode) debugPrint('[_submit] بدء prepareLocalJourney');
       await _prepareLocalJourney(user.uid);
+
+      phase = 'ensureUserDocument';
+      if (kDebugMode) debugPrint('[_submit] بدء ensureUserDocument');
       await service.ensureUserDocument();
+      if (kDebugMode) debugPrint('[_submit] تم إنشاء وثيقة المستخدم بنجاح');
+
+      phase = 'postAuth:preferences';
       final preferences = await SharedPreferences.getInstance();
       if ((preferences.getInt('watm_mvp_step') ?? 0) <= 5) {
         await preferences.setInt('watm_mvp_step', 6);
       }
+
+      phase = 'onAuthenticatedCallback';
       await widget.onAuthenticated?.call();
       if (mounted) setState(() {});
-    } catch (error) {
+    } catch (error, stackTrace) {
+      if (kDebugMode) debugPrint('[_submit] FAILED at phase=$phase');
+      if (kDebugMode) {
+        debugPrint('[_submit] error runtimeType=${error.runtimeType}');
+        if (error is FirebaseAuthException) {
+          debugPrint('FirebaseAuthException.code: ${error.code}');
+          debugPrint('FirebaseAuthException.message: ${error.message}');
+        }
+        if (error is FirebaseException) {
+          debugPrint('FirebaseException.plugin: ${error.plugin}');
+          debugPrint('FirebaseException.code: ${error.code}');
+          debugPrint('FirebaseException.message: ${error.message}');
+        }
+        debugPrint('stackTrace: ${stackTrace.toString()}');
+      }
       if (mounted) setState(() => _error = _friendlyError(error));
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -164,6 +199,24 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
           return 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
         case 'too-many-requests':
           return 'محاولات كثيرة. انتظر قليلاً ثم حاول مجدداً.';
+        case 'operation-not-allowed':
+          return 'تم تعطيل إنشاء الحسابات عبر البريد الإلكتروني في إعدادات المشروع.';
+        case 'network-request-failed':
+          return 'تعذّر الاتصال بالإنترنت. تحقق من اتصالك وحاول مجدداً.';
+        case 'invalid-api-key':
+          return 'مشكلة في إعدادات مفتاح API لمزود المصادقة.';
+        case 'app-not-authorized':
+          return 'تطبيقك غير مصرح له بالوصول إلى خدمات Firebase لهذا المشروع.';
+      }
+    }
+    if (error is FirebaseException) {
+      switch (error.code) {
+        case 'permission-denied':
+          return 'لا تملك الصلاحيات اللازمة لإتمام هذه العملية.';
+        case 'unavailable':
+          return 'خدمة Firebase غير متاحة حالياً. حاول لاحقاً.';
+        case 'network-request-failed':
+          return 'تعذّر الاتصال بالإنترنت. تحقق من اتصالك وحاول مجدداً.';
       }
     }
     return 'تعذر إكمال العملية. تحقق من الإنترنت وحاول مجدداً.';
@@ -201,11 +254,11 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
           constraints: const BoxConstraints(maxWidth: 430),
           child: WatmPage(
             onBack: widget.onBack,
-            eyebrow: 'تجربة WATM المجانية',
+            eyebrow: 'الوصول مجاني دائمًا',
             title: _createAccount ? 'أنشئ حسابك بالبريد' : 'مرحباً بعودتك',
             subtitle: _createAccount
-                ? 'ابدأ تجربتك لمدة 7 أيام بلا دفع أو بطاقة.'
-                : 'سجّل الدخول للعودة إلى تجربتك وبياناتك المحفوظة.',
+                ? 'استعمل WATM مجاناً ودائماً — لا توجد اشتراكات أو فترة تجريبية.'
+                : 'سجّل الدخول للعودة إلى حسابك وبياناتك المحفوظة.',
             children: [
               TextField(
                 controller: _emailController,
@@ -264,7 +317,7 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
                 color: AppColors.natureSoft,
                 borderColor: AppColors.nature,
                 child: Text(
-                  'لا يوجد خصم أو تجديد تلقائي. بعد اليوم السابع تختار أنت إن كنت تريد الاستمرار.',
+                  'WATM مجاني دائمًا. أنشئ حسابك وابدأ رحلتك مع دائرتك.',
                   style: TextStyle(color: AppColors.universe, height: 1.6),
                 ),
               ),
