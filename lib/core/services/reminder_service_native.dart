@@ -106,6 +106,7 @@ class _NativeReminderService implements ReminderService {
 
   @override
   Future<void> cancel(int id) async {
+    if (!_initialized) await initialize();
     if (!_initialized) return;
     await _plugin.cancel(id);
   }

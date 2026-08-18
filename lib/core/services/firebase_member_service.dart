@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint, kDebugMode;
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart'
+    show ValueNotifier, debugPrint, kDebugMode, kIsWeb;
 
 import '../utils/circle_settings.dart';
 import '../utils/firestore_helpers.dart';
@@ -857,6 +859,164 @@ return circle;
       }
       return streak;
     });
+  }
+
+  /// Purges every Firestore document owned by the signed-in user.
+  ///
+  /// This is the client-side counterpart to `cleanupUserOnDelete` in
+  /// `functions/index.js`: that Cloud Function needs the Blaze plan, which
+  /// this project isn't on, so the client does the same cleanup itself
+  /// while it can still satisfy `isOwner` security-rule checks. The one gap
+  /// versus the admin-privileged function is that a freed slot can't safely
+  /// reopen `matchingBuckets/{key}.openGroupId` from the client — the next
+  /// person to match on that key just creates a new circle instead of
+  /// reusing the vacated one. Not a correctness issue, only a missed reuse.
+  ///
+  /// Call this after reauthenticating and before `User.delete()` — it needs
+  /// the user to still be signed in, and `pendingAccountDeletion` is the
+  /// signal the security rules require before granting any of these
+  /// deletes (see firestore.rules).
+  Future<void> deleteAccountData() async {
+    final user = _requireUser();
+    final userReference = _firestore.collection('users').doc(user.uid);
+
+    // Retrying after a previous attempt purged everything but failed only on
+    // the final `User.delete()` call (e.g. a dropped connection) would
+    // otherwise try to "recreate" this doc via the merge-set below, which
+    // the create rule rejects (it requires uid/createdAt/etc). Nothing left
+    // to purge, so just let the caller retry the Auth deletion.
+    if (!(await userReference.get()).exists) return;
+
+    await userReference.set({
+      'pendingAccountDeletion': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    final userSnapshot = await userReference.get();
+    final groupId = firstNonEmptyString(
+      userSnapshot.data() ?? <String, dynamic>{},
+      ['groupId', 'circleId'],
+    );
+    if (groupId.isNotEmpty) {
+      await _leaveCircle(groupId: groupId, userId: user.uid);
+    }
+
+    for (final name in const [
+      'checkIns',
+      'returns',
+      'notificationReads',
+      'weeklyReviews',
+      'scheduleItems',
+    ]) {
+      await _deleteAllDocuments(userReference.collection(name));
+    }
+
+    await _firestore
+        .collection('matchingQueue')
+        .doc(user.uid)
+        .delete()
+        .catchError((Object _) {});
+    await userReference.delete();
+  }
+
+  /// Removes the member doc and keeps the group's `memberCount`/`status`
+  /// consistent — mirrors the relevant half of `cleanupUserOnDelete`
+  /// (functions/index.js), minus the matching-bucket reopen noted above.
+  /// Best-effort: a leftover member doc after a failed leave does not block
+  /// the rest of account deletion, and becomes unreachable once the Auth
+  /// account is gone anyway.
+  Future<void> _leaveCircle({
+    required String groupId,
+    required String userId,
+  }) async {
+    final groupReference = _firestore.collection('groups').doc(groupId);
+    final memberReference = groupReference.collection('members').doc(userId);
+    try {
+      await _firestore.runTransaction((transaction) async {
+        final memberSnapshot = await transaction.get(memberReference);
+        if (!memberSnapshot.exists) return;
+        final groupSnapshot = await transaction.get(groupReference);
+        final groupData = groupSnapshot.data();
+        if (!groupSnapshot.exists || groupData == null) {
+          transaction.delete(memberReference);
+          return;
+        }
+
+        transaction.delete(memberReference);
+        final currentCount = parseIntOrZero(groupData['memberCount']);
+        if (currentCount <= 1) {
+          transaction.delete(groupReference);
+          return;
+        }
+        final newCount = currentCount - 1;
+        transaction.update(groupReference, {
+          'memberCount': newCount,
+          'status': circleStatusForMemberCount(newCount),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      });
+    } on FirebaseException {
+      // Best-effort — see doc comment above.
+    }
+  }
+
+  /// Batches deletes in chunks under Firestore's 500-write batch limit.
+  Future<void> _deleteAllDocuments(
+    CollectionReference<Map<String, dynamic>> collection,
+  ) async {
+    final snapshot = await collection.get();
+    if (snapshot.docs.isEmpty) return;
+    for (var start = 0; start < snapshot.docs.length; start += 450) {
+      final batch = _firestore.batch();
+      for (final doc in snapshot.docs.skip(start).take(450)) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+    }
+  }
+
+  /// Registers this device's FCM token for the signed-in user, but only if
+  /// push notifications are already authorized — never shows a permission
+  /// dialog. Call this on every sign-in (see main.dart's auth-state
+  /// listener) so a returning user's token stays fresh across app updates
+  /// and reinstalls without asking again.
+  Future<void> syncPushTokenIfAuthorized() async {
+    if (kIsWeb) return; // Out of scope for now — needs a web push service
+    // worker (firebase-messaging-sw.js) this project doesn't have yet.
+    final settings = await FirebaseMessaging.instance.getNotificationSettings();
+    if (!_isPushAuthorized(settings)) return;
+    await _savePushToken();
+  }
+
+  /// Requests push-notification permission and registers the resulting
+  /// token. This shows a system dialog only the first time — same
+  /// Android/iOS permission as local reminders, so calling it after the
+  /// user has already decided (via either flow) never nags them again.
+  ///
+  /// Call this only from a user-initiated action (see schedule_tab_widgets.dart,
+  /// right after a successful `reminderService.requestPermission()`), not
+  /// proactively on sign-in — matching this app's existing rule that
+  /// notification permission is only ever requested lazily, never upfront.
+  Future<void> requestPushPermissionAndSyncToken() async {
+    if (kIsWeb) return;
+    final settings = await FirebaseMessaging.instance.requestPermission();
+    if (!_isPushAuthorized(settings)) return;
+    await _savePushToken();
+  }
+
+  bool _isPushAuthorized(NotificationSettings settings) =>
+      settings.authorizationStatus == AuthorizationStatus.authorized ||
+      settings.authorizationStatus == AuthorizationStatus.provisional;
+
+  Future<void> _savePushToken() async {
+    final user = currentUser;
+    if (user == null) return;
+    final token = await FirebaseMessaging.instance.getToken();
+    if (token == null) return;
+    await _firestore.collection('users').doc(user.uid).set({
+      'fcmToken': token,
+      'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> signOut() => _auth.signOut();

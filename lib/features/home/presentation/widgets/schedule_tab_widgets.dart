@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../core/services/firebase_member_service.dart';
 import '../../../../core/services/reminder_service.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/utils/firestore_helpers.dart';
@@ -98,6 +101,12 @@ class ScheduleSummary extends StatelessWidget {
             .limit(50),
       ),
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Padding(
+            padding: EdgeInsets.only(bottom: 14),
+            child: WatmCard(child: Text('تعذر تحميل الجدول الآن.')),
+          );
+        }
         final items = (snapshot.data?.docs ??
                 <QueryDocumentSnapshot<Map<String, dynamic>>>[])
             .map(_ScheduleItem.fromDocument)
@@ -232,6 +241,13 @@ class _SchedulePanelState extends State<SchedulePanel> {
     if (reminderEnabled) {
       reminderEnabled = await reminderService.requestPermission();
       permissionDenied = !reminderEnabled;
+      // Same OS permission as local reminders, so this never shows a
+      // second dialog — just registers this device for circle push
+      // notifications (new member, encouragement) now that we know
+      // notifications are wanted.
+      if (reminderEnabled) {
+        unawaited(FirebaseMemberService().requestPushPermissionAndSyncToken());
+      }
     }
     if (!mounted) return;
 
@@ -288,6 +304,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
         _showMessage('فعّل إذن الإشعارات من إعدادات المتصفح أو الهاتف.');
         return;
       }
+      unawaited(FirebaseMemberService().requestPushPermissionAndSyncToken());
     }
     try {
       await item.reference.update({

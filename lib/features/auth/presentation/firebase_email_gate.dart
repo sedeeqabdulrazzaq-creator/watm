@@ -76,29 +76,37 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
     });
     String phase = 'start';
     try {
-      final email = _emailController.text.trim();
-      final password = _passwordController.text;
-      if (kDebugMode) debugPrint('[_submit] Starting ${_createAccount ? 'createAccount' : 'signIn'}');
+      // If a previous attempt already authenticated but failed on a later
+      // step (e.g. ensureUserDocument lost network), Firebase Auth already
+      // has a signed-in user. Re-running createUser/signIn here would just
+      // throw (email-already-in-use) or be redundant, so pick up where we
+      // left off instead of restarting from scratch.
+      var user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        final email = _emailController.text.trim();
+        final password = _passwordController.text;
+        if (kDebugMode) debugPrint('[_submit] Starting ${_createAccount ? 'createAccount' : 'signIn'}');
 
-      late UserCredential credential;
-      phase = _createAccount ? 'auth:createUser' : 'auth:signIn';
-      if (_createAccount) {
-        if (kDebugMode) debugPrint('[_submit] بدء إنشاء الحساب.');
-        credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-        if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded (create).');
-      } else {
-        if (kDebugMode) debugPrint('[_submit] بدء تسجيل الدخول.');
-        credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-        if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded (signIn).');
+        late UserCredential credential;
+        phase = _createAccount ? 'auth:createUser' : 'auth:signIn';
+        if (_createAccount) {
+          if (kDebugMode) debugPrint('[_submit] بدء إنشاء الحساب.');
+          credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded (create).');
+        } else {
+          if (kDebugMode) debugPrint('[_submit] بدء تسجيل الدخول.');
+          credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          if (kDebugMode) debugPrint('[_submit] Firebase Authentication succeeded (signIn).');
+        }
+        user = credential.user;
       }
 
-      final user = credential.user;
       if (user == null) {
         phase = 'auth:no-user';
         throw StateError('لم يكتمل تسجيل الدخول.');
@@ -232,7 +240,11 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
       initialData: service.currentUser,
       builder: (context, snapshot) {
         final user = snapshot.data;
-        if (user != null) {
+        // A non-null user with a pending _error means Firebase Auth
+        // succeeded but a post-auth step (ensureUserDocument, etc.) failed —
+        // stay on the auth screen so the error and retry button are visible
+        // instead of silently letting the user into a half-set-up account.
+        if (user != null && _error == null) {
           return KeyedSubtree(
             key: ValueKey(user.uid),
             child: widget.child,
@@ -256,9 +268,9 @@ class _FirebaseEmailGateState extends State<FirebaseEmailGate> {
             onBack: widget.onBack,
             eyebrow: 'الوصول مجاني دائمًا',
             title: _createAccount ? 'أنشئ حسابك بالبريد' : 'مرحباً بعودتك',
-            subtitle: _createAccount
-                ? 'استعمل WATM مجاناً ودائماً — لا توجد اشتراكات أو فترة تجريبية.'
-                : 'سجّل الدخول للعودة إلى حسابك وبياناتك المحفوظة.',
+           subtitle: _createAccount
+            ? null
+            : 'سجّل الدخول للعودة إلى حسابك وبياناتك المحفوظة.',
             children: [
               TextField(
                 controller: _emailController,

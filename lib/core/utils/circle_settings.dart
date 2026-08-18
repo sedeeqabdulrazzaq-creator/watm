@@ -1,3 +1,5 @@
+import '../config/matching_config.dart';
+
 /// Default number of members a circle holds when the group's Firestore
 /// document does not explicitly set a `maxMembers` field. Every
 /// circle-facing query and display (member list, encouragement picker,
@@ -23,13 +25,35 @@ const Duration kCircleMatchingSafetyTimeout = Duration(seconds: 40);
 /// navigation after a successful match or a handled failure.
 const Duration kCircleMatchingCleanupTimeout = Duration(seconds: 5);
 
+/// Builds a canonical matching key from the user's matching criteria.
+///
+/// Each criterion is included or excluded based on its own feature flag in
+/// [MatchingConfig] — ageCode by [MatchingConfig.ageMatchingEnabled],
+/// interactionTimeCode by [MatchingConfig.interactionTimeMatchingEnabled].
+/// Excluding a criterion widens the matching pool: users who differ only on
+/// an excluded criterion still land in the same bucket and can share a
+/// circle.
+///
+/// The key format changes based on the flags so that toggling either one
+/// can never collide with a bucket built under a different combination —
+/// segments are always in the same g-d-a-t order, and age adds a `v2:`
+/// marker, so every combination of flags produces a distinct string. This
+/// also means flipping a flag never merges old and new matching data;
+/// circles created under the previous combination just stop receiving new
+/// members and keep working for whoever already joined them.
 String buildCircleMatchingKey({
   required int goalCode,
   required int durationCode,
   required int ageCode,
   required int interactionTimeCode,
 }) {
-  return 'g$goalCode-d$durationCode-a$ageCode-t$interactionTimeCode';
+  final prefix = MatchingConfig.ageMatchingEnabled ? 'v2:' : '';
+  final ageSegment = MatchingConfig.ageMatchingEnabled ? '-a$ageCode' : '';
+  final interactionSegment = MatchingConfig.interactionTimeMatchingEnabled
+      ? '-t$interactionTimeCode'
+      : '';
+  return '$prefix'
+      'g$goalCode-d$durationCode$ageSegment$interactionSegment';
 }
 
 /// Buckets age into 7-year bands starting at the minimum onboarding age

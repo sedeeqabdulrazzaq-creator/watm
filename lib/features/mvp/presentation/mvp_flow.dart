@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
@@ -35,6 +36,7 @@ class MvpFlow extends StatefulWidget {
 
 class _MvpFlowState extends State<MvpFlow> {
   int _step = 0;
+  int? _lastLoggedStep;
   final Map<int, Set<int>> _answers = {};
   final _nameController = TextEditingController();
   final _ageController = TextEditingController();
@@ -99,8 +101,7 @@ class _MvpFlowState extends State<MvpFlow> {
     QuestionData(
       eyebrow: 'المحاولات — السؤال 4 من 8',
       title: 'أي جملة تصف قصتك السابقة بصدق؟',
-      subtitle:
-          'لن نحكم على الماضي؛ سنستخدمه حتى لا نعيد معك الدائرة نفسها.',
+      subtitle: 'لن نحكم على الماضي؛ سنستخدمه حتى لا نعيد معك الدائرة نفسها.',
       options: [
         'هذه أول تجربة منظمة لي',
         'أبدأ بحماس، ثم يتراجع التزامي تدريجياً',
@@ -186,8 +187,7 @@ class _MvpFlowState extends State<MvpFlow> {
     QuestionData(
       eyebrow: 'إكمال ملف العضوية • حدود التذكير 3 من 6',
       title: 'أي متابعة تجعلك مسؤولاً من دون أن تشعرك بأنك مراقَب؟',
-      subtitle:
-          'حدودك مهمة. سنوضحها لدائرتك حتى يكون الدعم مفيداً ومحترماً.',
+      subtitle: 'حدودك مهمة. سنوضحها لدائرتك حتى يكون الدعم مفيداً ومحترماً.',
       options: [
         'اسألوني مباشرة إذا غبت؛ هذا سبب وجودي هنا',
         'ذكّروني بلطف ومن دون تكرار أو ضغط',
@@ -198,7 +198,12 @@ class _MvpFlowState extends State<MvpFlow> {
       eyebrow: 'إكمال ملف العضوية • التفاصيل الصحية 4 من 6',
       title: 'هل توجد تفاصيل صحية يجب مراعاتها؟',
       subtitle: 'هذه المعلومات خاصة، وتستخدم لتجنب اقتراحات غير مناسبة.',
-      options: ['لا توجد', 'إصابة أو ألم حركي', 'حالة صحية مزمنة', 'أفضل مناقشتها لاحقاً'],
+      options: [
+        'لا توجد',
+        'إصابة أو ألم حركي',
+        'حالة صحية مزمنة',
+        'أفضل مناقشتها لاحقاً'
+      ],
     ),
     QuestionData(
       eyebrow: 'إكمال ملف العضوية • ميثاق الدائرة 5 من 6',
@@ -329,7 +334,7 @@ class _MvpFlowState extends State<MvpFlow> {
         isTrial: _isTrial,
         trialDaysLeft: 0,
       );
-      if (_step >= 7 && _step <= 27 && !_weightGoalValid) {
+      if (_step >= 7 && _step <= 27 && (!_weightGoalValid || !_ageValid)) {
         _step = 6;
       }
     });
@@ -340,8 +345,7 @@ class _MvpFlowState extends State<MvpFlow> {
   }
 
   Future<void> _saveProgress() async {
-    final preferences =
-        _preferences ?? await SharedPreferences.getInstance();
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
     _preferences = preferences;
     final answers = _answers.map(
       (step, values) => MapEntry(step.toString(), values.toList()),
@@ -365,8 +369,7 @@ class _MvpFlowState extends State<MvpFlow> {
   }
 
   Future<void> _saveMemberProfile() async {
-    final preferences =
-        _preferences ?? await SharedPreferences.getInstance();
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
     _preferences = preferences;
     await preferences.setString('watm_name', _nameController.text.trim());
     await preferences.setString('watm_age', _ageController.text.trim());
@@ -398,8 +401,7 @@ class _MvpFlowState extends State<MvpFlow> {
 
   Future<void> _completeCheckIn() async {
     if (_checkInBusy) return;
-    final preferences =
-        _preferences ?? await SharedPreferences.getInstance();
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
     _preferences = preferences;
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -565,34 +567,57 @@ class _MvpFlowState extends State<MvpFlow> {
   }
 
   void _next() {
-    setState(() => _step = _step < 34 ? _step + 1 : 34);
+    setState(() {
+      if (_step == 15) {
+        // تخطي شاشات التجربة المحذوفة والانتقال لأول سؤال عضوية.
+        _step = 19;
+      } else if (_step >= 16 && _step <= 18) {
+        // معالجة أي مستخدم حُفظ سابقاً داخل الخطوات القديمة.
+        _step = 20;
+      } else {
+        _step = _step < 34 ? _step + 1 : 34;
+      }
+    });
     _saveProgress();
   }
 
   void _back() {
     if (_step > 1) {
-      setState(() => _step--);
+      setState(() {
+        if (_step == 25) {
+          // Leaving a failed matching attempt to change an answer: clear the
+          // stale error so returning to step 25 auto-retries instead of just
+          // re-displaying the old failure.
+          _matchingRequested = false;
+          _matchingError = null;
+        }
+        if (_step >= 16 && _step <= 19) {
+          _step = 15;
+        } else {
+          _step--;
+        }
+      });
       _saveProgress();
     }
   }
 
-void _go(int step) {
-  if (kDebugMode) debugPrint('[_go] BEFORE current=$_step target=$step');
+  void _go(int step) {
+    if (kDebugMode) debugPrint('[_go] BEFORE current=$_step target=$step');
 
-  setState(() {
-    if (step < 0) {
-      _step = 0;
-    } else if (step > 34) {
-      _step = 34;
-    } else {
-      _step = step;
-    }
-  });
+    setState(() {
+      if (step < 0) {
+        _step = 0;
+      } else if (step > 34) {
+        _step = 34;
+      } else {
+        _step = step;
+      }
+    });
 
-  if (kDebugMode) debugPrint('[_go] AFTER current=$_step');
+    if (kDebugMode) debugPrint('[_go] AFTER current=$_step');
 
-  _saveProgress();
-}
+    _saveProgress();
+  }
 
   void _toggleAnswer(int option, {bool multiple = false}) {
     setState(() {
@@ -619,11 +644,29 @@ void _go(int step) {
     _saveProgress();
   }
 
- @override
-Widget build(BuildContext context) {
-  if (kDebugMode) debugPrint('[BUILD] step=$_step');
+  @override
+  Widget build(BuildContext context) {
+    if (kDebugMode) debugPrint('[BUILD] step=$_step');
+    // Onboarding is 30+ steps; without per-step events we can only guess
+    // where signups drop off. `build()` is the one place every step
+    // transition already funnels through (`_next`/`_back`/`_go`/restore all
+    // just mutate `_step` via setState), so this logs each step reached
+    // exactly once instead of duplicating the hook at every call site.
+    if (_lastLoggedStep != _step) {
+      _lastLoggedStep = _step;
+      // Widget tests render MvpFlow without Firebase.initializeApp() ever
+      // running, so FirebaseAnalytics.instance would throw there.
+      if (FirebaseMemberService.isAvailable) {
+        unawaited(
+          FirebaseAnalytics.instance.logEvent(
+            name: 'onboarding_step',
+            parameters: {'step': _step},
+          ),
+        );
+      }
+    }
 
-  return Scaffold(
+    return Scaffold(
       backgroundColor: AppColors.muted,
       body: Center(
         child: ConstrainedBox(
@@ -644,8 +687,7 @@ Widget build(BuildContext context) {
   }
 
   Widget _screen() {
-    if (_step == 0) return _splash();
-    if (_step == 1) return _welcome();
+    if (_step == 0 || _step == 1) return _welcome();
     if (_step == 2) return _howItWorks();
     // Steps 4 and 5 belonged to the removed prototype phone/OTP flow.
     // Restoring an old local value now returns to the verified email account
@@ -681,36 +723,6 @@ Widget build(BuildContext context) {
     // intentionally redirected to the Firebase-backed member dashboard.
     if (_step >= 31 && _step <= 33) return _memberDashboardOrSignedOut();
     return _memberDashboardOrSignedOut();
-  }
-
-  Widget _splash() {
-    return ColoredBox(
-      color: AppColors.warmBackground,
-      child: SafeArea(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Spacer(),
-            Container(
-              width: 112,
-              height: 112,
-              alignment: Alignment.center,
-              decoration: const BoxDecoration(color: AppColors.sea, shape: BoxShape.circle),
-              child: const Text('W', style: TextStyle(color: Colors.white, fontSize: 48, fontWeight: FontWeight.w700)),
-            ),
-            const SizedBox(height: 18),
-            const Text('WATM', textDirection: TextDirection.ltr, style: TextStyle(fontSize: 34, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 18),
-            const Text('نحن لا نحقق أهدافنا وحدنا…\nبل نحققها معاً.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.earth, fontSize: 16, height: 1.75)),
-            const Spacer(),
-            const Padding(
-              padding: EdgeInsets.only(bottom: 32),
-              child: Text('Powered by WE ARE THE MESSAGE', textDirection: TextDirection.ltr, style: TextStyle(color: AppColors.earth, fontSize: 10)),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Widget _welcome() {
@@ -797,8 +809,7 @@ Widget build(BuildContext context) {
         onBack: () => _go(3),
         eyebrow: 'بداية رحلة خسارة الوزن',
         title: 'لنحدد نقطة البداية والهدف',
-        subtitle:
-            'يظهر اسمك الأول فقط داخل الدائرة، وتبقى أرقام وزنك خاصة بك.',
+        subtitle: 'يظهر اسمك الأول فقط داخل الدائرة، وتبقى أرقام وزنك خاصة بك.',
         children: [
           TextField(
             controller: _nameController,
@@ -811,10 +822,12 @@ Widget build(BuildContext context) {
             onChanged: (_) => setState(() {}),
             keyboardType: TextInputType.number,
             maxLength: 3,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'العمر',
               counterText: '',
-              helperText: 'من 13 إلى 100 سنة',
+              helperText: _ageController.text.isNotEmpty && !_ageValid
+                  ? 'يجب أن يكون عمرك 16 سنة أو أكثر للانضمام إلى WATM.'
+                  : 'من 16 إلى 100 سنة',
             ),
           ),
           const SizedBox(height: 14),
@@ -881,16 +894,14 @@ Widget build(BuildContext context) {
 
   bool get _ageValid {
     final age = int.tryParse(_ageController.text.trim());
-    return age != null && age >= 13 && age <= 100;
+    return age != null && age >= 16 && age <= 100;
   }
 
-  int get _age => int.tryParse(_ageController.text.trim()) ?? 13;
+  int get _age => int.tryParse(_ageController.text.trim()) ?? 16;
 
-  double? get _currentWeightKg =>
-      parseWeightKg(_currentWeightController.text);
+  double? get _currentWeightKg => parseWeightKg(_currentWeightController.text);
 
-  double? get _targetWeightKg =>
-      parseWeightKg(_targetWeightController.text);
+  double? get _targetWeightKg => parseWeightKg(_targetWeightController.text);
 
   bool get _weightGoalValid => isValidTargetWeight(
         currentWeight: _currentWeightKg,
@@ -924,7 +935,8 @@ Widget build(BuildContext context) {
         if (multiple)
           const Padding(
             padding: EdgeInsets.only(top: 4),
-            child: Text('يمكنك اختيار أكثر من إجابة.', style: TextStyle(color: AppColors.earth, fontSize: 12)),
+            child: Text('يمكنك اختيار أكثر من إجابة.',
+                style: TextStyle(color: AppColors.earth, fontSize: 12)),
           ),
       ],
       bottom: WatmButton(
@@ -946,15 +958,27 @@ Widget build(BuildContext context) {
             child: CircleAvatar(
               radius: 42,
               backgroundColor: AppColors.nature,
-              child: Icon(Icons.check_rounded, color: AppColors.universe, size: 42),
+              child: Icon(Icons.check_rounded,
+                  color: AppColors.universe, size: 42),
             ),
           ),
           const SizedBox(height: 20),
-          const Text('خطة البداية أصبحت جاهزة', textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600, height: 1.55)),
+          const Text('خطة البداية أصبحت جاهزة',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontSize: 22, fontWeight: FontWeight.w600, height: 1.55)),
           const SizedBox(height: 8),
-          const Text('تمت إضافة خطة البداية. تابع لإكمال ملفك وسيتم إجراء المطابقة تلقائياً.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.earth, fontSize: 14, height: 1.6)),
+          const Text(
+              'تمت إضافة خطة البداية. تابع لإكمال ملفك وسيتم إجراء المطابقة تلقائياً.',
+              textAlign: TextAlign.center,
+              style:
+                  TextStyle(color: AppColors.earth, fontSize: 14, height: 1.6)),
           const SizedBox(height: 18),
-          const Center(child: Chip(backgroundColor: AppColors.universe, label: Text('مستوى الجدية: مرتفع', style: TextStyle(color: Colors.white)))),
+          const Center(
+              child: Chip(
+                  backgroundColor: AppColors.universe,
+                  label: Text('مستوى الجدية: مرتفع',
+                      style: TextStyle(color: Colors.white)))),
           const SizedBox(height: 18),
           WatmCard(
             child: Column(
@@ -986,13 +1010,16 @@ Widget build(BuildContext context) {
           const WatmCard(
             color: AppColors.natureSoft,
             borderColor: AppColors.nature,
-            child: Text('وزنك رقم خاص بك. أعضاء الدائرة يرون التزامك وتقدمك فقط، وليس رقم الميزان.', style: TextStyle(color: AppColors.universe, height: 1.6)),
+            child: Text(
+                'وزنك رقم خاص بك. أعضاء الدائرة يرون التزامك وتقدمك فقط، وليس رقم الميزان.',
+                style: TextStyle(color: AppColors.universe, height: 1.6)),
           ),
         ],
         bottom: Column(
           children: [
             WatmButton(label: 'متابعة', onPressed: _next),
-            TextButton(onPressed: () => _go(7), child: const Text('تعديل إجاباتي')),
+            TextButton(
+                onPressed: () => _go(7), child: const Text('تعديل إجاباتي')),
           ],
         ),
       );
@@ -1036,9 +1063,7 @@ Widget build(BuildContext context) {
           ),
         const SizedBox(height: 34),
         Text(
-          error == null
-              ? 'نضيفك إلى دائرتك المناسبة'
-              : 'لم تكتمل المطابقة',
+          error == null ? 'نضيفك إلى دائرتك المناسبة' : 'لم تكتمل المطابقة',
           textAlign: TextAlign.center,
           style: const TextStyle(
             fontSize: 24,
@@ -1183,7 +1208,8 @@ Widget build(BuildContext context) {
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           if (initialData != null) {
-            return _buildCircleReadyPage(groupId, initialData, showLoading: true);
+            return _buildCircleReadyPage(groupId, initialData,
+                showLoading: true);
           }
           return WatmPage(
             title: 'تعذر تحميل دائرتك',
@@ -1197,7 +1223,8 @@ Widget build(BuildContext context) {
         }
         if (!snapshot.hasData) {
           if (initialData != null) {
-            return _buildCircleReadyPage(groupId, initialData, showLoading: true);
+            return _buildCircleReadyPage(groupId, initialData,
+                showLoading: true);
           }
           return const WatmPage(
             title: 'نجهّز دائرتك',
@@ -1260,11 +1287,18 @@ Widget build(BuildContext context) {
           ),
           builder: (context, membersSnapshot) {
             final memberDocs = membersSnapshot.data?.docs;
-            final memberCount =
-                memberDocs != null && membersSnapshot.hasData && memberDocs.isNotEmpty
-                    ? memberDocs.length
-                    : (initialData != null ? parseIntOrZero(initialData['memberCount']) : 1);
-            return _buildCircleReadyPage(groupId, data, memberCount: memberCount, maxMembers: maxMembers, statusText: statusText, groupName: groupName);
+            final memberCount = memberDocs != null &&
+                    membersSnapshot.hasData &&
+                    memberDocs.isNotEmpty
+                ? memberDocs.length
+                : (initialData != null
+                    ? parseIntOrZero(initialData['memberCount'])
+                    : 1);
+            return _buildCircleReadyPage(groupId, data,
+                memberCount: memberCount,
+                maxMembers: maxMembers,
+                statusText: statusText,
+                groupName: groupName);
           },
         );
       },
@@ -1326,9 +1360,7 @@ Widget build(BuildContext context) {
           return MemberData(
             name.characters.first,
             name,
-            streak > 0
-                ? '$streak أيام التزام متتالية'
-                : 'عضو جديد في الدائرة',
+            streak > 0 ? '$streak أيام التزام متتالية' : 'عضو جديد في الدائرة',
             firstNonEmptyString(
               data,
               ['goal'],
@@ -1339,8 +1371,7 @@ Widget build(BuildContext context) {
         return WatmPage(
           eyebrow: 'دائرتك التلقائية',
           title: 'تعرف على أعضاء دائرتك',
-          subtitle:
-              'يُضاف الأعضاء المتوافقون تلقائياً، حتى يكتمل العدد عند 7.',
+          subtitle: 'يُضاف الأعضاء المتوافقون تلقائياً، حتى يكتمل العدد عند 7.',
           children: [
             if (!snapshot.hasData)
               const Center(
@@ -1373,7 +1404,8 @@ Widget build(BuildContext context) {
     Map<String, dynamic> data, {
     int memberCount = 1,
     int maxMembers = kCircleMaxMembers,
-    String statusText = 'قيد التكوين — يبدأ النشاط عند $kCircleMinimumStartMembers أعضاء',
+    String statusText =
+        'قيد التكوين — يبدأ النشاط عند $kCircleMinimumStartMembers أعضاء',
     String groupName = 'دائرتك',
     bool showLoading = false,
   }) {
@@ -1488,22 +1520,22 @@ Widget build(BuildContext context) {
           WatmChoice(
             label: 'تحركت أو مشيت اليوم',
             selected: _answers[_step]?.contains(0) ?? false,
-            onTap: () => _toggleDailyCommitment(0),
+            onTap: _checkInBusy ? () {} : () => _toggleDailyCommitment(0),
           ),
           WatmChoice(
             label: 'التزمت بخطة وجباتي',
             selected: _answers[_step]?.contains(1) ?? false,
-            onTap: () => _toggleDailyCommitment(1),
+            onTap: _checkInBusy ? () {} : () => _toggleDailyCommitment(1),
           ),
           WatmChoice(
             label: 'شربت كمية الماء التي حددتها',
             selected: _answers[_step]?.contains(2) ?? false,
-            onTap: () => _toggleDailyCommitment(2),
+            onTap: _checkInBusy ? () {} : () => _toggleDailyCommitment(2),
           ),
           WatmChoice(
             label: 'كان يوماً صعباً، لكنني سجلت وسأعود غداً',
             selected: _answers[_step]?.contains(3) ?? false,
-            onTap: () => _toggleDailyCommitment(3),
+            onTap: _checkInBusy ? () {} : () => _toggleDailyCommitment(3),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -1523,20 +1555,27 @@ Widget build(BuildContext context) {
             WatmErrorCard(_checkInError!, height: 1.5),
           ],
         ],
-      bottom: WatmButton(
-        label: _checkInBusy ? 'جارٍ حفظ تسجيلك…' : 'تأكيد تسجيل اليوم',
-        onPressed: !_checkInBusy && (_answers[_step]?.isNotEmpty ?? false)
-            ? _completeCheckIn
-            : null,
-      ),
-    );
+        bottom: WatmButton(
+          label: _checkInBusy ? 'جارٍ حفظ تسجيلك…' : 'تأكيد تسجيل اليوم',
+          onPressed: !_checkInBusy && (_answers[_step]?.isNotEmpty ?? false)
+              ? _completeCheckIn
+              : null,
+        ),
+      );
 
   Widget _checkInSuccess() => WatmPage(
         children: [
           const SizedBox(height: 50),
-          const Center(child: CircleAvatar(radius: 48, backgroundColor: AppColors.nature, child: Icon(Icons.done_all_rounded, size: 46, color: AppColors.universe))),
+          const Center(
+              child: CircleAvatar(
+                  radius: 48,
+                  backgroundColor: AppColors.nature,
+                  child: Icon(Icons.done_all_rounded,
+                      size: 46, color: AppColors.universe))),
           const SizedBox(height: 26),
-          const Text('تم تسجيل حضورك اليوم', textAlign: TextAlign.center, style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+          const Text('تم تسجيل حضورك اليوم',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
           const SizedBox(height: 10),
           Text(
             dailyCommitmentScore(_answers[29] ?? <int>{}) == 0
@@ -1576,6 +1615,4 @@ Widget build(BuildContext context) {
     });
     _saveProgress();
   }
-
-
 }

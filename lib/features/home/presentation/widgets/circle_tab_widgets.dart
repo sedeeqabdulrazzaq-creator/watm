@@ -69,7 +69,7 @@ class CirclePanel extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
-            MembersPanel(groupId: groupId),
+            MembersPanel(groupId: groupId, maxMembers: maxMembers),
             const SizedBox(height: 14),
             EncouragementsPanel(groupId: groupId),
             const SizedBox(height: 14),
@@ -85,20 +85,26 @@ class CirclePanel extends StatelessWidget {
 /// member marked as the team captain. Extracted from
 /// `firebase_member_dashboard.dart`.
 class MembersPanel extends StatelessWidget {
-  const MembersPanel({required this.groupId, super.key});
+  const MembersPanel({
+    required this.groupId,
+    this.maxMembers = kCircleMaxMembers,
+    super.key,
+  });
 
   final String groupId;
+  final int maxMembers;
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: LiveQuery.query(
-        'members:$groupId',
+        'members:$groupId:$maxMembers',
         FirebaseFirestore.instance
             .collection('groups')
             .doc(groupId)
             .collection('members')
-            .limit(kCircleMaxMembers),
+            .orderBy('personalStreak', descending: true)
+            .limit(maxMembers),
       ),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -130,7 +136,7 @@ class MembersPanel extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'الأعضاء (${members.length} من $kCircleMaxMembers)',
+                'الأعضاء (${members.length} من $maxMembers)',
                 style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 14),

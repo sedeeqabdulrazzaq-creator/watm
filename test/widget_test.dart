@@ -12,7 +12,7 @@ void main() {
     await tester.pumpWidget(const WatmApp());
 
     expect(find.byType(MaterialApp), findsOneWidget);
-    expect(find.text('WATM'), findsOneWidget);
+    expect(find.byType(Scaffold), findsOneWidget);
     expect(find.text('0'), findsNothing);
   });
 }

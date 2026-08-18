@@ -259,9 +259,18 @@ service cloud.firestore {
             .hasAny([
               'currentWeightKg', 'targetWeightKg', 'weightLossGoalKg'
             ])
-          || validWeightGoal(request.resource.data));
+          || validWeightGoal(request.resource.data))
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['pendingAccountDeletion'])
+          || request.resource.data.get('pendingAccountDeletion', false) is bool);
 
-      allow delete: if false;
+      // Deleting Auth accounts client-side (no Cloud Functions on the Spark
+      // plan) means the client must purge this doc itself. `pendingAccountDeletion`
+      // is a self-set flag — same short-lived-signal pattern as
+      // `pendingMatchingKey` above — so a client can only ever delete its own
+      // doc, and only after it has deliberately opted into the delete flow.
+      allow delete: if isOwner(userId)
+        && resource.data.get('pendingAccountDeletion', false) == true;
 
       match /checkIns/{checkInId} {
         allow read: if isOwner(userId);
@@ -273,7 +282,8 @@ service cloud.firestore {
           && validCheckIn(request.resource.data)
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.updatedAt == request.time;
-        allow delete: if false;
+        allow delete: if isOwner(userId)
+          && get(/databases/$(database)/documents/users/$(userId)).data.get('pendingAccountDeletion', false) == true;
       }
 
       match /returns/{returnId} {
@@ -292,7 +302,8 @@ service cloud.firestore {
           && request.resource.data.selectedAction.size() <= 160
           && request.resource.data.returnedAt is timestamp
           && request.resource.data.status == 'returned';
-        allow delete: if false;
+        allow delete: if isOwner(userId)
+          && get(/databases/$(database)/documents/users/$(userId)).data.get('pendingAccountDeletion', false) == true;
       }
 
       match /notificationReads/{notificationId} {
@@ -312,7 +323,8 @@ service cloud.firestore {
           && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/encouragements/$(notificationId))
           && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/encouragements/$(notificationId)).data.recipientId
             == userId;
-        allow delete: if false;
+        allow delete: if isOwner(userId)
+          && get(/databases/$(database)/documents/users/$(userId)).data.get('pendingAccountDeletion', false) == true;
       }
 
       match /weeklyReviews/{reviewId} {
@@ -352,7 +364,8 @@ service cloud.firestore {
           && request.resource.data.nextFocus is string
           && request.resource.data.nextFocus.size() <= 160
           && request.resource.data.updatedAt == request.time;
-        allow delete: if false;
+        allow delete: if isOwner(userId)
+          && get(/databases/$(database)/documents/users/$(userId)).data.get('pendingAccountDeletion', false) == true;
       }
 
       match /scheduleItems/{itemId} {
@@ -431,22 +444,46 @@ service cloud.firestore {
         && userWillPointToGroup(groupId);
 
       allow update: if isSignedIn()
-        && !exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['memberCount', 'status', 'updatedAt'])
-        && resource.data.maxMembers == 7
-        && resource.data.minimumStartMembers == 5
-        && resource.data.matchingKey
-          == getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingMatchingKey', '')
-        && request.resource.data.memberCount
-          == resource.data.memberCount + 1
-        && request.resource.data.memberCount <= 7
         && request.resource.data.updatedAt is timestamp
-        && validCircleStatus(request.resource.data)
-        && willBeCurrentGroupMember(groupId)
-        && userWillPointToGroup(groupId);
+        && (
+          ( // Joining: the requester is not yet a member.
+            !exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+            && resource.data.maxMembers == 7
+            && resource.data.minimumStartMembers == 5
+            && resource.data.matchingKey
+              == getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingMatchingKey', '')
+            && request.resource.data.memberCount
+              == resource.data.memberCount + 1
+            && request.resource.data.memberCount <= 7
+            && validCircleStatus(request.resource.data)
+            && willBeCurrentGroupMember(groupId)
+            && userWillPointToGroup(groupId)
+          )
+          || ( // Leaving during account deletion (no Cloud Functions on the
+               // Spark plan to do this server-side): the requester is a
+               // current member whose own member doc is being removed in
+               // the same transaction/batch, so this can't be used to
+               // deflate the count without actually leaving.
+            exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+            && !getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).exists
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingAccountDeletion', false) == true
+            && request.resource.data.memberCount == resource.data.memberCount - 1
+            && request.resource.data.memberCount >= 1
+            && validCircleStatus(request.resource.data)
+          )
+        );
 
-      allow delete: if false;
+      // The last member leaving during account deletion deletes the group
+      // outright — matching cleanupUserOnDelete's own server-side behavior
+      // (functions/index.js) when it runs: a circle with a zero count would
+      // violate validCircleStatus above (which requires memberCount >= 1)
+      // and would otherwise sit as a ghost circle a bucket keeps pointing to.
+      allow delete: if isSignedIn()
+        && resource.data.memberCount == 1
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('pendingAccountDeletion', false) == true;
 
       match /members/{memberId} {
         // `isOwner(memberId)` ليست تساهلاً بل شرط لعمل الانضمام أصلاً.
@@ -538,7 +575,11 @@ service cloud.firestore {
           && request.resource.data.get('lastCheckInAt', request.time)
             is timestamp;
 
-        allow delete: if false;
+        // Self-removal, only as part of account deletion (see
+        // `pendingAccountDeletion` on `users/{userId}` above) — there is no
+        // standalone "leave circle" feature.
+        allow delete: if isOwner(memberId)
+          && get(/databases/$(database)/documents/users/$(memberId)).data.get('pendingAccountDeletion', false) == true;
       }
 
       match /encouragements/{encouragementId} {
@@ -644,7 +685,8 @@ service cloud.firestore {
         && request.resource.data.matchedAt is timestamp
         && request.resource.data.updatedAt is timestamp;
 
-      allow delete: if false;
+      allow delete: if isOwner(userId)
+        && get(/databases/$(database)/documents/users/$(userId)).data.get('pendingAccountDeletion', false) == true;
     }
 
     // Deny every path that is not explicitly covered above.

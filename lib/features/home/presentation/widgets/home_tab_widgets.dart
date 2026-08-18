@@ -6,6 +6,7 @@ import '../../../../core/utils/circle_settings.dart';
 import '../../../../core/utils/firestore_helpers.dart';
 import '../../../../core/widgets/watm_components.dart';
 import '../../../../core/utils/live_query.dart';
+import 'dashboard_shared_widgets.dart';
 
 /// "مكانك محفوظ" prompt shown after 2+ days of absence.
 /// Extracted from `firebase_member_dashboard.dart`.
@@ -447,9 +448,12 @@ class CircleSummary extends StatelessWidget {
             ),
           );
         }
-        final data = snapshot.data?.data();
-        if (snapshot.hasError || data == null) {
+        if (snapshot.hasError) {
           return const WatmCard(child: Text('تعذر تحميل ملخص الدائرة.'));
+        }
+        final data = snapshot.data?.data();
+        if (data == null) {
+          return const NoCirclePanel();
         }
         final storedName = firstNonEmptyString(
           data,

@@ -7,13 +7,19 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('Splash screen shows the WATM identity', (tester) async {
-    await tester.pumpWidget(const WatmApp());
+  testWidgets('Removed splash branding stays hidden', (tester) async {
+  await tester.pumpWidget(const WatmApp());
 
-    expect(find.text('WATM'), findsOneWidget);
-    expect(find.textContaining('نحن لا نحقق أهدافنا وحدنا'), findsOneWidget);
-    expect(find.text('Powered by WE ARE THE MESSAGE'), findsOneWidget);
-  });
+  expect(find.text('WATM'), findsNothing);
+  expect(
+    find.textContaining('نحن لا نحقق أهدافنا وحدنا'),
+    findsNothing,
+  );
+  expect(
+    find.text('Powered by WE ARE THE MESSAGE'),
+    findsNothing,
+  );
+});
 
   testWidgets('Splash continues to the membership welcome screen', (tester) async {
     await tester.pumpWidget(const WatmApp());

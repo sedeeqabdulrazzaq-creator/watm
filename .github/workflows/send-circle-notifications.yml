@@ -1,0 +1,59 @@
+name: Send circle push notifications
+
+# Runs scripts/send-circle-notifications.js on a schedule. Same reasoning as
+# cleanup-orphaned-members.yml: a plain Node script using the Firebase Admin
+# SDK needs zero Google Cloud billing and works without the Blaze plan that
+# Cloud Functions (and therefore Firestore triggers) require.
+#
+# Every 5 minutes is GitHub Actions' minimum schedule interval. That's fine
+# on a public repo (unmetered Actions minutes); if this repo ever goes
+# private, widen the cron below — private repos get a limited monthly
+# Actions-minutes quota and a 5-minute schedule burns through it in days.
+#
+# Setup (one time, same secret as cleanup-orphaned-members.yml — reuse it
+# if already created):
+#   1. Firebase Console -> Project settings -> Service accounts
+#      -> Generate new private key (downloads a .json file).
+#   2. In this repo: Settings -> Secrets and variables -> Actions
+#      -> New repository secret.
+#      Name:  FIREBASE_SERVICE_ACCOUNT_KEY
+#      Value: paste the full contents of that .json file.
+#
+# After that this runs automatically every 5 minutes, and you can also
+# trigger it manually any time from the Actions tab ("Run workflow").
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install script dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Write service account key
+        working-directory: scripts
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}' > service-account-key.json
+
+      - name: Send notifications
+        working-directory: scripts
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: service-account-key.json
+        run: node send-circle-notifications.js
+
+      - name: Remove service account key
+        if: always()
+        working-directory: scripts
+        run: rm -f service-account-key.json

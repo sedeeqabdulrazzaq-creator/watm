@@ -112,6 +112,10 @@ exports.cleanupUserOnDelete = functions.auth.user().onDelete(async (user) => {
 
   await Promise.all([
     db.collection('matchingQueue').doc(uid).delete().catch(() => {}),
-    userRef.delete().catch(() => {}),
+    // recursiveDelete removes the user doc AND every subcollection under it
+    // (checkIns, returns, notificationReads, weeklyReviews, scheduleItems).
+    // A plain userRef.delete() only removes the parent doc and would leave
+    // those subcollections orphaned in Firestore forever.
+    db.recursiveDelete(userRef).catch(() => {}),
   ]);
 });

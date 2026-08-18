@@ -48,7 +48,7 @@ class _FirebaseReturnAfterAbsenceScreenState
           .collection('returns')
           .doc(id)
           .set({
-        'absenceDays': widget.absenceDays,
+        'absenceDays': widget.absenceDays.clamp(1, 30),
         'selectedAction': _actions[selectedIndex],
         'returnedAt': FieldValue.serverTimestamp(),
         'status': 'returned',
