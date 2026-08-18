@@ -38,6 +38,13 @@ jobs:
         working-directory: scripts
         run: npm install
 
+      - name: Check service account key secret
+        run: |
+          if [ -z '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}' ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT_KEY secret is not set. See the workflow comments for setup instructions."
+            exit 1
+          fi
+
       - name: Write service account key
         working-directory: scripts
         run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}' > service-account-key.json
